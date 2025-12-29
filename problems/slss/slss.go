@@ -150,7 +150,12 @@ func innerProduct(a []int32, b []int8, q int) int32 {
 // sampleMatrix generates a deterministic uniform random matrix using SHAKE256.
 // The matrix is generated row by row in parallel.
 func sampleMatrix(seed []byte, m, n, q int) []int32 {
-	A := make([]int32, m*n)
+	// Check for overflow in matrix size
+	matrixSize, err := utils.SafeMultiply(m, n)
+	if err != nil {
+		return nil // parameters cause overflow
+	}
+	A := make([]int32, matrixSize)
 	numWorkers := runtime.GOMAXPROCS(0)
 
 	// Helper to generate a row using provided buffers
@@ -227,9 +232,13 @@ func sampleMatrix(seed []byte, m, n, q int) []int32 {
 // sampleSparseVector generates a deterministic sparse vector with exactly w non-zero entries.
 // The non-zero entries are uniformly distributed in {-1, 1}.
 // The positions are chosen uniformly at random without replacement.
+// Returns nil if parameters are invalid (n <= 0 or w > n).
 func sampleSparseVector(seed []byte, n, w int) []int8 {
-	if w > n {
-		panic("sparsity w cannot exceed dimension n")
+	if n <= 0 {
+		return nil // invalid dimension
+	}
+	if w > n || w < 0 {
+		return nil // invalid sparsity
 	}
 
 	v := make([]int8, n)
@@ -336,6 +345,11 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 	matrixSeed := utils.HashWithDomain(DomainMatrix, seed)
 	secretSeed := utils.HashWithDomain(DomainSecret, seed)
 	errorSeed := utils.HashWithDomain(DomainError, seed)
+	defer func() {
+		utils.Zeroize(matrixSeed)
+		utils.Zeroize(secretSeed)
+		utils.Zeroize(errorSeed)
+	}()
 
 	A := sampleMatrix(matrixSeed, m, n, q)
 	s := sampleSparseVector(secretSeed, n, w)
@@ -359,6 +373,9 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams, randomness []byte) (*kmosaic.SLSSCiphertext, error) {
 	if len(randomness) < 32 {
 		return nil, errors.New("randomness must be at least 32 bytes")
+	}
+	if len(message) > utils.MaxMessageSize {
+		return nil, errors.New("message exceeds maximum allowed size")
 	}
 
 	n, m, q, sigma := params.N, params.M, params.Q, params.Sigma
@@ -453,9 +470,17 @@ func DeserializePublicKey(data []byte) (*kmosaic.SLSSPublicKey, error) {
 	pk := &kmosaic.SLSSPublicKey{}
 	offset := 0
 
-	aLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	rawA := binary.LittleEndian.Uint32(data[offset:])
+	if rawA > uint32(utils.MaxMatrixElements) {
+		return nil, errors.New("invalid SLSS public key: A length exceeds limit")
+	}
+	aLen := int(rawA)
 	offset += 4
-	if offset+aLen*4 > len(data) {
+	aBytes, err := utils.SafeMultiply(aLen, 4)
+	if err != nil {
+		return nil, errors.New("invalid SLSS public key: A length overflow")
+	}
+	if offset+aBytes > len(data) {
 		return nil, errors.New("invalid SLSS public key: A data truncated")
 	}
 	pk.A = make([]int32, aLen)
@@ -464,9 +489,20 @@ func DeserializePublicKey(data []byte) (*kmosaic.SLSSPublicKey, error) {
 		offset += 4
 	}
 
-	tLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid SLSS public key: missing T length")
+	}
+	rawT := binary.LittleEndian.Uint32(data[offset:])
+	if rawT > uint32(utils.MaxVectorLength) {
+		return nil, errors.New("invalid SLSS public key: T length exceeds limit")
+	}
+	tLen := int(rawT)
 	offset += 4
-	if offset+tLen*4 > len(data) {
+	tBytes, err := utils.SafeMultiply(tLen, 4)
+	if err != nil {
+		return nil, errors.New("invalid SLSS public key: T length overflow")
+	}
+	if offset+tBytes > len(data) {
 		return nil, errors.New("invalid SLSS public key: T data truncated")
 	}
 	pk.T = make([]int32, tLen)

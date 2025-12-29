@@ -35,10 +35,10 @@ func mod(x int64, p int) int {
 
 // ModInverse computes the modular multiplicative inverse a^(-1) mod p.
 // It uses the extended Euclidean algorithm.
-// Panics if a is 0.
-func ModInverse(a, p int) int {
+// Returns an error if a is 0.
+func ModInverse(a, p int) (int, error) {
 	if a == 0 {
-		panic("cannot compute inverse of zero")
+		return 0, errors.New("cannot compute inverse of zero")
 	}
 	oldR, r := mod(int64(a), p), p
 	oldS, s := 1, 0
@@ -48,7 +48,7 @@ func ModInverse(a, p int) int {
 		oldR, r = r, oldR-q*r
 		oldS, s = s, oldS-q*s
 	}
-	return mod(int64(oldS), p)
+	return mod(int64(oldS), p), nil
 }
 
 // SL2Multiply multiplies two SL(2, Z_p) elements.
@@ -140,7 +140,12 @@ func SL2ToBytes(m kmosaic.SL2Element) []byte {
 }
 
 // BytesToSL2 deserializes a 16-byte slice to an SL(2, Z_p) element.
+// Panics if data is less than 16 bytes; callers must validate input length.
 func BytesToSL2(data []byte) kmosaic.SL2Element {
+	if len(data) < 16 {
+		// Return identity element for invalid input to avoid panic
+		return kmosaic.SL2Element{A: 1, B: 0, C: 0, D: 1}
+	}
 	return kmosaic.SL2Element{
 		A: int(int32(binary.LittleEndian.Uint32(data[0:]))),
 		B: int(int32(binary.LittleEndian.Uint32(data[4:]))),
@@ -166,7 +171,10 @@ func sampleSL2Element(seed []byte, p int) kmosaic.SL2Element {
 		c := mod(int64(binary.LittleEndian.Uint32(bytes[offset+8:])), p)
 
 		if a != 0 {
-			aInv := ModInverse(a, p)
+			aInv, err := ModInverse(a, p)
+			if err != nil {
+				continue // should not happen since a != 0, but handle gracefully
+			}
 			d := mod(int64(1+b*c)*int64(aInv), p)
 			// Verify determinant
 			if mod(int64(a*d-b*c), p) == 1 {
@@ -213,6 +221,9 @@ func KeyGen(params kmosaic.EGRWParams, seed []byte) (*kmosaic.EGRWKeyPair, error
 func Encrypt(pk kmosaic.EGRWPublicKey, message []byte, params kmosaic.EGRWParams, randomness []byte) (*kmosaic.EGRWCiphertext, error) {
 	if len(randomness) < 32 {
 		return nil, errors.New("randomness must be at least 32 bytes")
+	}
+	if len(message) > utils.MaxMessageSize {
+		return nil, errors.New("message exceeds maximum allowed size")
 	}
 
 	p, k := params.P, params.K

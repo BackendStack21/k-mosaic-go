@@ -57,6 +57,11 @@ func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic
 	slssSeed := utils.HashWithDomain(DomainSLSS, seed)
 	tddSeed := utils.HashWithDomain(DomainTDD, seed)
 	egrwSeed := utils.HashWithDomain(DomainEGRW, seed)
+	defer func() {
+		utils.Zeroize(slssSeed)
+		utils.Zeroize(tddSeed)
+		utils.Zeroize(egrwSeed)
+	}()
 
 	// Generate component keys in parallel
 	var wg sync.WaitGroup
@@ -394,6 +399,19 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	pk.Binding = make([]byte, 32)
 	copy(pk.Binding, data[offset:offset+32])
 
+	// Cross-field consistency checks
+	expectedSLSSALen := params.SLSS.M * params.SLSS.N
+	if len(pk.SLSS.A) != expectedSLSSALen {
+		return nil, errors.New("invalid public key: SLSS.A length mismatch with params")
+	}
+	if len(pk.SLSS.T) != params.SLSS.M {
+		return nil, errors.New("invalid public key: SLSS.T length mismatch with params")
+	}
+	expectedTDDTLen := params.TDD.N * params.TDD.N * params.TDD.N
+	if len(pk.TDD.T) != expectedTDDTLen {
+		return nil, errors.New("invalid public key: TDD.T length mismatch with params")
+	}
+
 	return pk, nil
 }
 
@@ -407,6 +425,9 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 	sk := &kmosaic.MOSAICSignSecretKey{}
 
 	// Read SLSS secret key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: truncated SLSS length")
+	}
 	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+slssLen > len(data) {
@@ -419,15 +440,27 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 	offset += slssLen
 
 	// Read TDD factors
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing TDD factor count")
+	}
 	factorCount := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if factorCount < 0 || factorCount > 1000000 {
+		return nil, errors.New("invalid secret key: unreasonable factor count")
+	}
 	sk.TDD.Factors.A = make([][]int32, factorCount)
 	sk.TDD.Factors.B = make([][]int32, factorCount)
 	sk.TDD.Factors.C = make([][]int32, factorCount)
 
 	for i := 0; i < factorCount; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid secret key: TDD factor A length truncated")
+		}
 		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
+		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
+			return nil, errors.New("invalid secret key: TDD factor A truncated")
+		}
 		sk.TDD.Factors.A[i] = make([]int32, vecLen)
 		for j := 0; j < vecLen; j++ {
 			sk.TDD.Factors.A[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -435,8 +468,14 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 		}
 	}
 	for i := 0; i < factorCount; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid secret key: TDD factor B length truncated")
+		}
 		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
+		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
+			return nil, errors.New("invalid secret key: TDD factor B truncated")
+		}
 		sk.TDD.Factors.B[i] = make([]int32, vecLen)
 		for j := 0; j < vecLen; j++ {
 			sk.TDD.Factors.B[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -444,8 +483,14 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 		}
 	}
 	for i := 0; i < factorCount; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid secret key: TDD factor C length truncated")
+		}
 		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
+		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
+			return nil, errors.New("invalid secret key: TDD factor C truncated")
+		}
 		sk.TDD.Factors.C[i] = make([]int32, vecLen)
 		for j := 0; j < vecLen; j++ {
 			sk.TDD.Factors.C[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -453,9 +498,15 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 		}
 	}
 
-	// Read EGRW walk
+	// EGRW secret key (walk)
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing EGRW walk length")
+	}
 	walkLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if walkLen < 0 || walkLen > (len(data)-offset) {
+		return nil, errors.New("invalid secret key: EGRW walk truncated")
+	}
 	sk.EGRW.Walk = make([]int, walkLen)
 	for i := 0; i < walkLen; i++ {
 		sk.EGRW.Walk[i] = int(data[offset+i])
@@ -463,15 +514,27 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 	offset += walkLen
 
 	// Read Seed
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing seed length")
+	}
 	seedLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if seedLen < 0 || seedLen > (len(data)-offset) {
+		return nil, errors.New("invalid secret key: seed truncated")
+	}
 	sk.Seed = make([]byte, seedLen)
 	copy(sk.Seed, data[offset:offset+seedLen])
 	offset += seedLen
 
 	// Read PublicKeyHash
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing public key hash length")
+	}
 	hashLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if hashLen < 0 || hashLen > (len(data)-offset) {
+		return nil, errors.New("invalid secret key: public key hash truncated")
+	}
 	sk.PublicKeyHash = make([]byte, hashLen)
 	copy(sk.PublicKeyHash, data[offset:offset+hashLen])
 
@@ -484,12 +547,18 @@ func DeserializeSignature(data []byte) (*kmosaic.MOSAICSignature, error) {
 		return nil, errors.New("invalid signature data: too short")
 	}
 
+	// Maximum signature component size (1MB each for commitment, challenge, response)
+	const maxSigComponentSize = 1 << 20
+
 	sig := &kmosaic.MOSAICSignature{}
 	offset := 0
 
 	// Read commitment
 	commitLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if commitLen < 0 || commitLen > maxSigComponentSize {
+		return nil, errors.New("invalid signature: commitment length exceeds limit")
+	}
 	if offset+commitLen > len(data) {
 		return nil, errors.New("invalid signature: commitment truncated")
 	}
@@ -498,8 +567,14 @@ func DeserializeSignature(data []byte) (*kmosaic.MOSAICSignature, error) {
 	offset += commitLen
 
 	// Read challenge
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid signature: missing challenge length")
+	}
 	chalLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if chalLen < 0 || chalLen > maxSigComponentSize {
+		return nil, errors.New("invalid signature: challenge length exceeds limit")
+	}
 	if offset+chalLen > len(data) {
 		return nil, errors.New("invalid signature: challenge truncated")
 	}
@@ -508,8 +583,14 @@ func DeserializeSignature(data []byte) (*kmosaic.MOSAICSignature, error) {
 	offset += chalLen
 
 	// Read response
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid signature: missing response length")
+	}
 	respLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if respLen < 0 || respLen > maxSigComponentSize {
+		return nil, errors.New("invalid signature: response length exceeds limit")
+	}
 	if offset+respLen > len(data) {
 		return nil, errors.New("invalid signature: response truncated")
 	}
