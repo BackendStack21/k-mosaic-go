@@ -848,7 +848,7 @@ func handleBenchmark(args []string) {
 
 	iterations := 10
 	if iterationsStr != "" {
-		fmt.Sscanf(iterationsStr, "%d", &iterations)
+		_, _ = fmt.Sscanf(iterationsStr, "%d", &iterations)
 	}
 
 	if iterations < 1 {
