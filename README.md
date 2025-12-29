@@ -33,6 +33,22 @@ kMOSAIC (Key Mosaic) is a post-quantum secure cryptographic framework that combi
 go get github.com/BackendStack21/k-mosaic-go
 ```
 
+## Command-line Interface
+
+Use the `k-mosaic-cli` for common tasks such as key generation, encryption/decryption, and signing/verification. Quick cheat:
+
+```bash
+# Install the CLI
+go install github.com/BackendStack21/k-mosaic-go/cmd/k-mosaic-cli@latest
+
+# Generate keys, encrypt, decrypt
+k-mosaic-cli kem keygen -l 128 -o keys.json
+k-mosaic-cli kem encrypt -pk keys.json -m "Secret message" -o enc.json
+k-mosaic-cli kem decrypt -sk keys.json -pk keys.json -ct enc.json
+```
+
+Full CLI documentation and examples are available in `CLI.md` — see: [./CLI.md](CLI.md).
+
 ## Quick Start
 
 ```go

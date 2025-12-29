@@ -354,3 +354,21 @@ func SerializePublicKey(pk kmosaic.TDDPublicKey) []byte {
 	}
 	return result
 }
+
+// DeserializePublicKey deserializes TDD public key
+func DeserializePublicKey(data []byte) (*kmosaic.TDDPublicKey, error) {
+	if len(data) < 4 {
+		return nil, errors.New("invalid TDD public key: too short")
+	}
+
+	pk := &kmosaic.TDDPublicKey{}
+	tLen := int(binary.LittleEndian.Uint32(data[0:]))
+	if 4+tLen*4 > len(data) {
+		return nil, errors.New("invalid TDD public key: T data truncated")
+	}
+	pk.T = make([]int32, tLen)
+	for i := 0; i < tLen; i++ {
+		pk.T[i] = int32(binary.LittleEndian.Uint32(data[4+i*4:]))
+	}
+	return pk, nil
+}

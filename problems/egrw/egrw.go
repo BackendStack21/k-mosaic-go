@@ -272,3 +272,15 @@ func SerializePublicKey(pk kmosaic.EGRWPublicKey) []byte {
 	copy(result[len(startBytes):], endBytes)
 	return result
 }
+
+// DeserializePublicKey deserializes EGRW public key
+func DeserializePublicKey(data []byte) (*kmosaic.EGRWPublicKey, error) {
+	if len(data) < 32 {
+		return nil, errors.New("invalid EGRW public key: too short")
+	}
+
+	pk := &kmosaic.EGRWPublicKey{}
+	pk.VStart = BytesToSL2(data[0:16])
+	pk.VEnd = BytesToSL2(data[16:32])
+	return pk, nil
+}

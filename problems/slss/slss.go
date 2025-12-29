@@ -443,3 +443,37 @@ func SerializePublicKey(pk kmosaic.SLSSPublicKey) []byte {
 
 	return result
 }
+
+// DeserializePublicKey deserializes SLSS public key
+func DeserializePublicKey(data []byte) (*kmosaic.SLSSPublicKey, error) {
+	if len(data) < 8 {
+		return nil, errors.New("invalid SLSS public key: too short")
+	}
+
+	pk := &kmosaic.SLSSPublicKey{}
+	offset := 0
+
+	aLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+aLen*4 > len(data) {
+		return nil, errors.New("invalid SLSS public key: A data truncated")
+	}
+	pk.A = make([]int32, aLen)
+	for i := 0; i < aLen; i++ {
+		pk.A[i] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	tLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+tLen*4 > len(data) {
+		return nil, errors.New("invalid SLSS public key: T data truncated")
+	}
+	pk.T = make([]int32, tLen)
+	for i := 0; i < tLen; i++ {
+		pk.T[i] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	return pk, nil
+}
