@@ -70,7 +70,7 @@ func main() {
 | Sign            | ~11.66 μs |
 | Verify          | ~2.36 ms  |
 
-_See `BenchmarkReport.md` for full detailed benchmark results and methodology._
+_See [BenchmarkReport.md](BenchmarkReport.md) for full detailed benchmark results and methodology._
 
 ## API Reference
 
