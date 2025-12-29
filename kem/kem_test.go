@@ -100,3 +100,214 @@ func TestSerialization(t *testing.T) {
 		t.Error("SerializeCiphertext returned empty bytes")
 	}
 }
+
+func TestSerializeDeserializePublicKey(t *testing.T) {
+	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
+		t.Run(string(level), func(t *testing.T) {
+			kp, err := GenerateKeyPair(level)
+			if err != nil {
+				t.Fatalf("GenerateKeyPair failed: %v", err)
+			}
+
+			// Serialize
+			serialized := SerializePublicKey(&kp.PublicKey)
+			if len(serialized) == 0 {
+				t.Fatal("SerializePublicKey returned empty bytes")
+			}
+
+			// Deserialize
+			deserialized, err := DeserializePublicKey(serialized)
+			if err != nil {
+				t.Fatalf("DeserializePublicKey failed: %v", err)
+			}
+
+			// Verify by re-serializing and comparing
+			reSerialized := SerializePublicKey(deserialized)
+			if !bytes.Equal(serialized, reSerialized) {
+				t.Error("Round-trip serialization of public key failed")
+			}
+		})
+	}
+}
+
+func TestSerializeDeserializeSecretKey(t *testing.T) {
+	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
+		t.Run(string(level), func(t *testing.T) {
+			kp, err := GenerateKeyPair(level)
+			if err != nil {
+				t.Fatalf("GenerateKeyPair failed: %v", err)
+			}
+
+			// Serialize
+			serialized := SerializeSecretKey(&kp.SecretKey)
+			if len(serialized) == 0 {
+				t.Fatal("SerializeSecretKey returned empty bytes")
+			}
+
+			// Deserialize
+			deserialized, err := DeserializeSecretKey(serialized)
+			if err != nil {
+				t.Fatalf("DeserializeSecretKey failed: %v", err)
+			}
+
+			// Verify by re-serializing and comparing
+			reSerialized := SerializeSecretKey(deserialized)
+			if !bytes.Equal(serialized, reSerialized) {
+				t.Error("Round-trip serialization of secret key failed")
+			}
+
+			// Test decapsulation with deserialized key
+			res, err := Encapsulate(&kp.PublicKey)
+			if err != nil {
+				t.Fatalf("Encapsulate failed: %v", err)
+			}
+
+			ss1, err := Decapsulate(&kp.SecretKey, &kp.PublicKey, &res.Ciphertext)
+			if err != nil {
+				t.Fatalf("Decapsulate with original key failed: %v", err)
+			}
+
+			ss2, err := Decapsulate(deserialized, &kp.PublicKey, &res.Ciphertext)
+			if err != nil {
+				t.Fatalf("Decapsulate with deserialized key failed: %v", err)
+			}
+
+			if !bytes.Equal(ss1, ss2) {
+				t.Error("Shared secrets differ with deserialized secret key")
+			}
+		})
+	}
+}
+
+func TestSerializeDeserializeCiphertext(t *testing.T) {
+	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
+		t.Run(string(level), func(t *testing.T) {
+			kp, err := GenerateKeyPair(level)
+			if err != nil {
+				t.Fatalf("GenerateKeyPair failed: %v", err)
+			}
+
+			res, err := Encapsulate(&kp.PublicKey)
+			if err != nil {
+				t.Fatalf("Encapsulate failed: %v", err)
+			}
+
+			// Serialize
+			serialized := SerializeCiphertext(&res.Ciphertext)
+			if len(serialized) == 0 {
+				t.Fatal("SerializeCiphertext returned empty bytes")
+			}
+
+			// Deserialize
+			deserialized, err := DeserializeCiphertext(serialized)
+			if err != nil {
+				t.Fatalf("DeserializeCiphertext failed: %v", err)
+			}
+
+			// Verify by re-serializing and comparing
+			reSerialized := SerializeCiphertext(deserialized)
+			if !bytes.Equal(serialized, reSerialized) {
+				t.Error("Round-trip serialization of ciphertext failed")
+			}
+
+			// Test decapsulation with deserialized ciphertext
+			ss1, err := Decapsulate(&kp.SecretKey, &kp.PublicKey, &res.Ciphertext)
+			if err != nil {
+				t.Fatalf("Decapsulate with original ciphertext failed: %v", err)
+			}
+
+			ss2, err := Decapsulate(&kp.SecretKey, &kp.PublicKey, deserialized)
+			if err != nil {
+				t.Fatalf("Decapsulate with deserialized ciphertext failed: %v", err)
+			}
+
+			if !bytes.Equal(ss1, ss2) {
+				t.Error("Shared secrets differ with deserialized ciphertext")
+			}
+		})
+	}
+}
+
+func TestSerializeDeserializeEncryptedMessage(t *testing.T) {
+	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
+		t.Run(string(level), func(t *testing.T) {
+			kp, err := GenerateKeyPair(level)
+			if err != nil {
+				t.Fatalf("GenerateKeyPair failed: %v", err)
+			}
+
+			msg := []byte("test message for encryption")
+			encrypted, err := Encrypt(&kp.PublicKey, msg)
+			if err != nil {
+				t.Fatalf("Encrypt failed: %v", err)
+			}
+
+			// Serialize
+			serialized := SerializeEncryptedMessage(encrypted)
+			if len(serialized) == 0 {
+				t.Fatal("SerializeEncryptedMessage returned empty bytes")
+			}
+
+			// Deserialize
+			deserialized, err := DeserializeEncryptedMessage(serialized)
+			if err != nil {
+				t.Fatalf("DeserializeEncryptedMessage failed: %v", err)
+			}
+
+			// Verify by re-serializing and comparing
+			reSerialized := SerializeEncryptedMessage(deserialized)
+			if !bytes.Equal(serialized, reSerialized) {
+				t.Error("Round-trip serialization of encrypted message failed")
+			}
+
+			// Test decryption with deserialized encrypted message
+			dec1, err := Decrypt(&kp.SecretKey, &kp.PublicKey, encrypted)
+			if err != nil {
+				t.Fatalf("Decrypt with original encrypted message failed: %v", err)
+			}
+
+			dec2, err := Decrypt(&kp.SecretKey, &kp.PublicKey, deserialized)
+			if err != nil {
+				t.Fatalf("Decrypt with deserialized encrypted message failed: %v", err)
+			}
+
+			if !bytes.Equal(dec1, dec2) || !bytes.Equal(dec1, msg) {
+				t.Error("Decrypted messages differ or don't match original")
+			}
+		})
+	}
+}
+
+func TestDeserializeErrors(t *testing.T) {
+	// Test invalid public key data
+	_, err := DeserializePublicKey([]byte{1, 2, 3})
+	if err == nil {
+		t.Error("DeserializePublicKey should fail with invalid data")
+	}
+
+	// Test invalid secret key data
+	_, err = DeserializeSecretKey([]byte{1, 2, 3})
+	if err == nil {
+		t.Error("DeserializeSecretKey should fail with invalid data")
+	}
+
+	// Test invalid ciphertext data
+	_, err = DeserializeCiphertext([]byte{1, 2, 3})
+	if err == nil {
+		t.Error("DeserializeCiphertext should fail with invalid data")
+	}
+
+	// Test invalid encrypted message data
+	_, err = DeserializeEncryptedMessage([]byte{1, 2, 3})
+	if err == nil {
+		t.Error("DeserializeEncryptedMessage should fail with invalid data")
+	}
+
+	// Test invalid security level in public key
+	badData := make([]byte, 100)
+	badData[0] = 99 // Invalid security level
+	_, err = DeserializePublicKey(badData)
+	if err == nil {
+		t.Error("DeserializePublicKey should fail with invalid security level")
+	}
+}

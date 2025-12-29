@@ -213,9 +213,18 @@ func SerializePublicKey(pk *kmosaic.MOSAICSignPublicKey) []byte {
 	tddBytes := tdd.SerializePublicKey(pk.TDD)
 	egrwBytes := egrw.SerializePublicKey(pk.EGRW)
 
-	result := make([]byte, 0, 12+len(slssBytes)+len(tddBytes)+len(egrwBytes)+len(pk.Binding))
+	// Serialize params (security level as string)
+	levelBytes := []byte(pk.Params.Level)
+
+	result := make([]byte, 0, 16+len(slssBytes)+len(tddBytes)+len(egrwBytes)+len(pk.Binding)+len(levelBytes))
 
 	lenBuf := make([]byte, 4)
+
+	// Security level
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(levelBytes)))
+	result = append(result, lenBuf...)
+	result = append(result, levelBytes...)
+
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(slssBytes)))
 	result = append(result, lenBuf...)
 	result = append(result, slssBytes...)
@@ -251,4 +260,261 @@ func SerializeSignature(sig *kmosaic.MOSAICSignature) []byte {
 	result = append(result, sig.Response...)
 
 	return result
+}
+
+// SerializeSecretKey serializes a signature secret key.
+func SerializeSecretKey(sk *kmosaic.MOSAICSignSecretKey) []byte {
+	result := make([]byte, 0)
+	lenBuf := make([]byte, 4)
+
+	// SLSS secret key (sparse vector)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.SLSS.S)))
+	result = append(result, lenBuf...)
+	for _, v := range sk.SLSS.S {
+		result = append(result, byte(v))
+	}
+
+	// TDD secret key (factors)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.TDD.Factors.A)))
+	result = append(result, lenBuf...)
+	for _, vec := range sk.TDD.Factors.A {
+		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
+		result = append(result, lenBuf...)
+		for _, v := range vec {
+			buf := make([]byte, 4)
+			binary.LittleEndian.PutUint32(buf, uint32(v))
+			result = append(result, buf...)
+		}
+	}
+	for _, vec := range sk.TDD.Factors.B {
+		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
+		result = append(result, lenBuf...)
+		for _, v := range vec {
+			buf := make([]byte, 4)
+			binary.LittleEndian.PutUint32(buf, uint32(v))
+			result = append(result, buf...)
+		}
+	}
+	for _, vec := range sk.TDD.Factors.C {
+		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
+		result = append(result, lenBuf...)
+		for _, v := range vec {
+			buf := make([]byte, 4)
+			binary.LittleEndian.PutUint32(buf, uint32(v))
+			result = append(result, buf...)
+		}
+	}
+
+	// EGRW secret key (walk)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.EGRW.Walk)))
+	result = append(result, lenBuf...)
+	for _, v := range sk.EGRW.Walk {
+		result = append(result, byte(v))
+	}
+
+	// Seed
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.Seed)))
+	result = append(result, lenBuf...)
+	result = append(result, sk.Seed...)
+
+	// PublicKeyHash
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.PublicKeyHash)))
+	result = append(result, lenBuf...)
+	result = append(result, sk.PublicKeyHash...)
+
+	return result
+}
+
+// DeserializePublicKey deserializes bytes to a signature public key.
+func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
+	if len(data) < 16 {
+		return nil, errors.New("invalid public key data: too short")
+	}
+
+	offset := 0
+	pk := &kmosaic.MOSAICSignPublicKey{}
+
+	// Read security level
+	levelLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+levelLen > len(data) {
+		return nil, errors.New("invalid public key: security level truncated")
+	}
+	level := kmosaic.SecurityLevel(data[offset : offset+levelLen])
+	params, err := core.GetParams(level)
+	if err != nil {
+		return nil, err
+	}
+	pk.Params = params
+	offset += levelLen
+
+	// Read SLSS public key
+	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+slssLen > len(data) {
+		return nil, errors.New("invalid public key: SLSS data truncated")
+	}
+	slssPK, err := slss.DeserializePublicKey(data[offset : offset+slssLen])
+	if err != nil {
+		return nil, err
+	}
+	pk.SLSS = *slssPK
+	offset += slssLen
+
+	// Read TDD public key
+	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+tddLen > len(data) {
+		return nil, errors.New("invalid public key: TDD data truncated")
+	}
+	tddPK, err := tdd.DeserializePublicKey(data[offset : offset+tddLen])
+	if err != nil {
+		return nil, err
+	}
+	pk.TDD = *tddPK
+	offset += tddLen
+
+	// Read EGRW public key
+	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+egrwLen > len(data) {
+		return nil, errors.New("invalid public key: EGRW data truncated")
+	}
+	egrwPK, err := egrw.DeserializePublicKey(data[offset : offset+egrwLen])
+	if err != nil {
+		return nil, err
+	}
+	pk.EGRW = *egrwPK
+	offset += egrwLen
+
+	// Rest is binding (32 bytes)
+	if offset+32 > len(data) {
+		return nil, errors.New("invalid public key: binding truncated")
+	}
+	pk.Binding = make([]byte, 32)
+	copy(pk.Binding, data[offset:offset+32])
+
+	return pk, nil
+}
+
+// DeserializeSecretKey deserializes bytes to a signature secret key.
+func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
+	if len(data) < 4 {
+		return nil, errors.New("invalid secret key data: too short")
+	}
+
+	offset := 0
+	sk := &kmosaic.MOSAICSignSecretKey{}
+
+	// Read SLSS secret key
+	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+slssLen > len(data) {
+		return nil, errors.New("invalid secret key: SLSS data truncated")
+	}
+	sk.SLSS.S = make([]int8, slssLen)
+	for i := 0; i < slssLen; i++ {
+		sk.SLSS.S[i] = int8(data[offset+i])
+	}
+	offset += slssLen
+
+	// Read TDD factors
+	factorCount := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	sk.TDD.Factors.A = make([][]int32, factorCount)
+	sk.TDD.Factors.B = make([][]int32, factorCount)
+	sk.TDD.Factors.C = make([][]int32, factorCount)
+
+	for i := 0; i < factorCount; i++ {
+		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+		sk.TDD.Factors.A[i] = make([]int32, vecLen)
+		for j := 0; j < vecLen; j++ {
+			sk.TDD.Factors.A[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
+			offset += 4
+		}
+	}
+	for i := 0; i < factorCount; i++ {
+		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+		sk.TDD.Factors.B[i] = make([]int32, vecLen)
+		for j := 0; j < vecLen; j++ {
+			sk.TDD.Factors.B[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
+			offset += 4
+		}
+	}
+	for i := 0; i < factorCount; i++ {
+		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+		sk.TDD.Factors.C[i] = make([]int32, vecLen)
+		for j := 0; j < vecLen; j++ {
+			sk.TDD.Factors.C[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
+			offset += 4
+		}
+	}
+
+	// Read EGRW walk
+	walkLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	sk.EGRW.Walk = make([]int, walkLen)
+	for i := 0; i < walkLen; i++ {
+		sk.EGRW.Walk[i] = int(data[offset+i])
+	}
+	offset += walkLen
+
+	// Read Seed
+	seedLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	sk.Seed = make([]byte, seedLen)
+	copy(sk.Seed, data[offset:offset+seedLen])
+	offset += seedLen
+
+	// Read PublicKeyHash
+	hashLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	sk.PublicKeyHash = make([]byte, hashLen)
+	copy(sk.PublicKeyHash, data[offset:offset+hashLen])
+
+	return sk, nil
+}
+
+// DeserializeSignature deserializes bytes to a signature.
+func DeserializeSignature(data []byte) (*kmosaic.MOSAICSignature, error) {
+	if len(data) < 12 {
+		return nil, errors.New("invalid signature data: too short")
+	}
+
+	sig := &kmosaic.MOSAICSignature{}
+	offset := 0
+
+	// Read commitment
+	commitLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+commitLen > len(data) {
+		return nil, errors.New("invalid signature: commitment truncated")
+	}
+	sig.Commitment = make([]byte, commitLen)
+	copy(sig.Commitment, data[offset:offset+commitLen])
+	offset += commitLen
+
+	// Read challenge
+	chalLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+chalLen > len(data) {
+		return nil, errors.New("invalid signature: challenge truncated")
+	}
+	sig.Challenge = make([]byte, chalLen)
+	copy(sig.Challenge, data[offset:offset+chalLen])
+	offset += chalLen
+
+	// Read response
+	respLen := int(binary.LittleEndian.Uint32(data[offset:]))
+	offset += 4
+	if offset+respLen > len(data) {
+		return nil, errors.New("invalid signature: response truncated")
+	}
+	sig.Response = make([]byte, respLen)
+	copy(sig.Response, data[offset:offset+respLen])
+
+	return sig, nil
 }

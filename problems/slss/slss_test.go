@@ -2,6 +2,7 @@ package slss
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
@@ -63,5 +64,81 @@ func TestSerialization(t *testing.T) {
 	serialized := SerializePublicKey(kp.PublicKey)
 	if len(serialized) == 0 {
 		t.Error("SerializePublicKey returned empty bytes")
+	}
+}
+
+func TestSerializeDeserializePublicKey(t *testing.T) {
+	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
+		t.Run(string(level), func(t *testing.T) {
+			params, err := core.GetParams(level)
+			if err != nil {
+				t.Fatalf("GetParams failed: %v", err)
+			}
+
+			seed, _ := utils.SecureRandomBytes(32)
+			kp, err := KeyGen(params.SLSS, seed)
+			if err != nil {
+				t.Fatalf("KeyGen failed: %v", err)
+			}
+
+			// Serialize
+			serialized := SerializePublicKey(kp.PublicKey)
+			if len(serialized) == 0 {
+				t.Fatal("SerializePublicKey returned empty bytes")
+			}
+
+			// Deserialize
+			deserialized, err := DeserializePublicKey(serialized)
+			if err != nil {
+				t.Fatalf("DeserializePublicKey failed: %v", err)
+			}
+
+			// Verify by re-serializing and comparing
+			reSerialized := SerializePublicKey(*deserialized)
+			if !bytes.Equal(serialized, reSerialized) {
+				t.Error("Round-trip serialization of SLSS public key failed")
+			}
+
+			// Verify encryption/decryption works with deserialized key
+			msg := []byte("test message")
+			randomness, _ := utils.SecureRandomBytes(32)
+
+			ct, err := Encrypt(*deserialized, msg, params.SLSS, randomness)
+			if err != nil {
+				t.Fatalf("Encrypt with deserialized key failed: %v", err)
+			}
+
+			dec := Decrypt(ct, kp.SecretKey, params.SLSS)
+			if !bytes.Equal(msg, dec) {
+				t.Error("Decryption with deserialized public key failed")
+			}
+		})
+	}
+}
+
+func TestDeserializePublicKeyErrors(t *testing.T) {
+	// Test with too short data
+	_, err := DeserializePublicKey([]byte{1, 2, 3})
+	if err == nil {
+		t.Error("DeserializePublicKey should fail with too short data")
+	}
+
+	// Test with invalid A length
+	badData := make([]byte, 8)
+	binary.LittleEndian.PutUint32(badData[0:], 1000000) // Large A length
+	_, err = DeserializePublicKey(badData)
+	if err == nil {
+		t.Error("DeserializePublicKey should fail with truncated A data")
+	}
+
+	// Test with valid A but invalid T length
+	badData = make([]byte, 100)
+	binary.LittleEndian.PutUint32(badData[0:], 2) // A length = 2
+	binary.LittleEndian.PutUint32(badData[4:], 0)
+	binary.LittleEndian.PutUint32(badData[8:], 0)
+	binary.LittleEndian.PutUint32(badData[12:], 1000000) // Large T length
+	_, err = DeserializePublicKey(badData)
+	if err == nil {
+		t.Error("DeserializePublicKey should fail with truncated T data")
 	}
 }
