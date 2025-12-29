@@ -4,6 +4,8 @@
 
 A Go implementation of the kMOSAIC post-quantum cryptographic library.
 
+> A TypeScript/JavaScript version is also available at [https://github.com/BackendStack21/k-mosaic](https://github.com/BackendStack21/k-mosaic).
+
 ## Documentation
 
 - [kMOSAIC White Paper](https://github.com/BackendStack21/k-mosaic/blob/main/kMOSAIC_WHITE_PAPER.md) - Detailed technical specification and cryptographic design
