@@ -229,10 +229,16 @@ func KeyGen(params kmosaic.TDDParams, seed []byte) (*kmosaic.TDDKeyPair, error) 
 
 	n, r, q, sigma := params.N, params.R, params.Q, params.Sigma
 
+	// Check for overflow in tensor size
+	tensorSize, err := utils.SafeMultiply3(n, n, n)
+	if err != nil {
+		return nil, errors.New("TDD parameters cause tensor size overflow")
+	}
+
 	factors := sampleTensorFactors(utils.HashWithDomain(DomainFactors, seed), n, r, q)
 
 	// Construct secret tensor
-	T := make([]int32, n*n*n)
+	T := make([]int32, tensorSize)
 	for i := 0; i < r; i++ {
 		tensorAddOuterProduct(T, n, factors.A[i], factors.B[i], factors.C[i], q)
 	}
@@ -254,6 +260,9 @@ func KeyGen(params kmosaic.TDDParams, seed []byte) (*kmosaic.TDDKeyPair, error) 
 func Encrypt(pk kmosaic.TDDPublicKey, message []byte, params kmosaic.TDDParams, randomness []byte) (*kmosaic.TDDCiphertext, error) {
 	if len(randomness) < 32 {
 		return nil, errors.New("randomness must be at least 32 bytes")
+	}
+	if len(message) > utils.MaxMessageSize {
+		return nil, errors.New("message exceeds maximum allowed size")
 	}
 
 	n, r, q := params.N, params.R, params.Q
@@ -362,8 +371,16 @@ func DeserializePublicKey(data []byte) (*kmosaic.TDDPublicKey, error) {
 	}
 
 	pk := &kmosaic.TDDPublicKey{}
-	tLen := int(binary.LittleEndian.Uint32(data[0:]))
-	if 4+tLen*4 > len(data) {
+	raw := binary.LittleEndian.Uint32(data[0:])
+	if raw > uint32(utils.MaxTensorElements) {
+		return nil, errors.New("invalid TDD public key: T length exceeds limit")
+	}
+	tLen := int(raw)
+	requiredBytes, err := utils.SafeMultiply(tLen, 4)
+	if err != nil {
+		return nil, errors.New("invalid TDD public key: T length overflow")
+	}
+	if 4+requiredBytes > len(data) {
 		return nil, errors.New("invalid TDD public key: T data truncated")
 	}
 	pk.T = make([]int32, tLen)

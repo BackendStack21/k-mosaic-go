@@ -10,34 +10,41 @@ import (
 )
 
 func TestModInverse_One(t *testing.T) {
-	inv := ModInverse(1, 7)
+	inv, err := ModInverse(1, 7)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	if inv != 1 {
 		t.Errorf("expected 1, got %d", inv)
 	}
 }
 
 func TestModInverse_General(t *testing.T) {
-	inv := ModInverse(3, 7)
+	inv, err := ModInverse(3, 7)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	if (3*inv)%7 != 1 {
 		t.Errorf("expected (3*%d) mod 7 = 1", inv)
 	}
 }
 
 func TestModInverse_Negative(t *testing.T) {
-	inv := ModInverse(-3, 7)
+	inv, err := ModInverse(-3, 7)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	expected := ((-3%7 + 7) * inv) % 7
 	if expected != 1 {
 		t.Errorf("expected 1, got %d", expected)
 	}
 }
 
-func TestModInverse_PanicZero(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for a=0")
-		}
-	}()
-	ModInverse(0, 7)
+func TestModInverse_Zero(t *testing.T) {
+	_, err := ModInverse(0, 7)
+	if err == nil {
+		t.Error("expected error for a=0")
+	}
 }
 
 func TestGetGenerators_CacheHit(t *testing.T) {

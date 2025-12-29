@@ -58,6 +58,11 @@ func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic
 	slssSeed := utils.HashWithDomain(DomainSLSS, seed)
 	tddSeed := utils.HashWithDomain(DomainTDD, seed)
 	egrwSeed := utils.HashWithDomain(DomainEGRW, seed)
+	defer func() {
+		utils.Zeroize(slssSeed)
+		utils.Zeroize(tddSeed)
+		utils.Zeroize(egrwSeed)
+	}()
 
 	// Generate component keys in parallel
 	var wg sync.WaitGroup
@@ -241,6 +246,11 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 	// Decrypt shares in parallel
 	var wg sync.WaitGroup
 	var m1, m2, m3 []byte
+	defer func() {
+		utils.Zeroize(m1)
+		utils.Zeroize(m2)
+		utils.Zeroize(m3)
+	}()
 
 	wg.Add(3)
 	go func() {
@@ -263,6 +273,7 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 	if err != nil {
 		return implicitReject(sk, ct), nil
 	}
+	defer utils.Zeroize(ephemeralSecret)
 
 	// Re-encrypt to verify (Fujisaki-Okamoto)
 	reEncResult, err := EncapsulateDeterministic(pk, ephemeralSecret)
@@ -298,9 +309,11 @@ func Encrypt(pk *kmosaic.MOSAICPublicKey, plaintext []byte) (*kmosaic.EncryptedM
 	// Derive encryption key and nonce
 	encKey := utils.Shake256(utils.HashWithDomain(DomainEncKey, result.SharedSecret), 32)
 	nonce := utils.Shake256(utils.HashWithDomain(DomainNonce, result.SharedSecret), 12)
+	defer utils.Zeroize(encKey)
 
 	// Simple XOR encryption (in production, use AES-GCM)
 	keystream := utils.Shake256(utils.HashConcat(encKey, nonce), len(plaintext)+16)
+	defer utils.Zeroize(keystream)
 	encrypted := make([]byte, len(plaintext)+16)
 	for i := 0; i < len(plaintext); i++ {
 		encrypted[i] = plaintext[i] ^ keystream[i]
@@ -325,12 +338,14 @@ func Decrypt(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, em *kmosa
 
 	// Derive encryption key
 	encKey := utils.Shake256(utils.HashWithDomain(DomainEncKey, sharedSecret), 32)
+	defer utils.Zeroize(encKey)
 
 	// Decrypt
 	if len(em.Encrypted) < 16 {
 		return nil, errors.New("ciphertext too short")
 	}
 	keystream := utils.Shake256(utils.HashConcat(encKey, em.Nonce), len(em.Encrypted))
+	defer utils.Zeroize(keystream)
 	plaintextLen := len(em.Encrypted) - 16
 	plaintext := make([]byte, plaintextLen)
 	for i := 0; i < plaintextLen; i++ {
@@ -575,6 +590,19 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	pk.Binding = make([]byte, 32)
 	copy(pk.Binding, data[offset:offset+32])
 
+	// Cross-field consistency checks
+	expectedSLSSALen := params.SLSS.M * params.SLSS.N
+	if len(pk.SLSS.A) != expectedSLSSALen {
+		return nil, errors.New("invalid public key: SLSS.A length mismatch with params")
+	}
+	if len(pk.SLSS.T) != params.SLSS.M {
+		return nil, errors.New("invalid public key: SLSS.T length mismatch with params")
+	}
+	expectedTDDTLen := params.TDD.N * params.TDD.N * params.TDD.N
+	if len(pk.TDD.T) != expectedTDDTLen {
+		return nil, errors.New("invalid public key: TDD.T length mismatch with params")
+	}
+
 	return pk, nil
 }
 
@@ -588,6 +616,9 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 	sk := &kmosaic.MOSAICSecretKey{}
 
 	// Read SLSS secret key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: truncated SLSS length")
+	}
 	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+slssLen > len(data) {
@@ -600,15 +631,27 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 	offset += slssLen
 
 	// Read TDD factors
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing TDD factor count")
+	}
 	factorCount := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if factorCount < 0 || factorCount > 1000000 {
+		return nil, errors.New("invalid secret key: unreasonable factor count")
+	}
 	sk.TDD.Factors.A = make([][]int32, factorCount)
 	sk.TDD.Factors.B = make([][]int32, factorCount)
 	sk.TDD.Factors.C = make([][]int32, factorCount)
 
 	for i := 0; i < factorCount; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid secret key: TDD factor A length truncated")
+		}
 		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
+		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
+			return nil, errors.New("invalid secret key: TDD factor A truncated")
+		}
 		sk.TDD.Factors.A[i] = make([]int32, vecLen)
 		for j := 0; j < vecLen; j++ {
 			sk.TDD.Factors.A[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -616,8 +659,14 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 		}
 	}
 	for i := 0; i < factorCount; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid secret key: TDD factor B length truncated")
+		}
 		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
+		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
+			return nil, errors.New("invalid secret key: TDD factor B truncated")
+		}
 		sk.TDD.Factors.B[i] = make([]int32, vecLen)
 		for j := 0; j < vecLen; j++ {
 			sk.TDD.Factors.B[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -625,8 +674,14 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 		}
 	}
 	for i := 0; i < factorCount; i++ {
+		if offset+4 > len(data) {
+			return nil, errors.New("invalid secret key: TDD factor C length truncated")
+		}
 		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
+		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
+			return nil, errors.New("invalid secret key: TDD factor C truncated")
+		}
 		sk.TDD.Factors.C[i] = make([]int32, vecLen)
 		for j := 0; j < vecLen; j++ {
 			sk.TDD.Factors.C[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -635,8 +690,14 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 	}
 
 	// Read EGRW walk
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing EGRW walk length")
+	}
 	walkLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if walkLen < 0 || walkLen > (len(data)-offset) {
+		return nil, errors.New("invalid secret key: EGRW walk truncated")
+	}
 	sk.EGRW.Walk = make([]int, walkLen)
 	for i := 0; i < walkLen; i++ {
 		sk.EGRW.Walk[i] = int(data[offset+i])
@@ -644,15 +705,27 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 	offset += walkLen
 
 	// Read Seed
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing seed length")
+	}
 	seedLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if seedLen < 0 || seedLen > (len(data)-offset) {
+		return nil, errors.New("invalid secret key: seed truncated")
+	}
 	sk.Seed = make([]byte, seedLen)
 	copy(sk.Seed, data[offset:offset+seedLen])
 	offset += seedLen
 
 	// Read PublicKeyHash
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid secret key: missing public key hash length")
+	}
 	hashLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if hashLen < 0 || hashLen > (len(data)-offset) {
+		return nil, errors.New("invalid secret key: public key hash truncated")
+	}
 	sk.PublicKeyHash = make([]byte, hashLen)
 	copy(sk.PublicKeyHash, data[offset:offset+hashLen])
 
@@ -728,14 +801,23 @@ func deserializeSLSSCiphertext(data []byte) (*kmosaic.SLSSCiphertext, error) {
 
 	uLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if uLen < 0 || uLen > (len(data)-offset)/4 {
+		return nil, errors.New("invalid SLSS ciphertext: U truncated")
+	}
 	ct.U = make([]int32, uLen)
 	for i := 0; i < uLen; i++ {
 		ct.U[i] = int32(binary.LittleEndian.Uint32(data[offset:]))
 		offset += 4
 	}
 
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid SLSS ciphertext: missing V length")
+	}
 	vLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if vLen < 0 || vLen > (len(data)-offset)/4 {
+		return nil, errors.New("invalid SLSS ciphertext: V truncated")
+	}
 	ct.V = make([]int32, vLen)
 	for i := 0; i < vLen; i++ {
 		ct.V[i] = int32(binary.LittleEndian.Uint32(data[offset:]))
@@ -751,6 +833,9 @@ func deserializeTDDCiphertext(data []byte) (*kmosaic.TDDCiphertext, error) {
 	}
 	ct := &kmosaic.TDDCiphertext{}
 	dataLen := int(binary.LittleEndian.Uint32(data[0:]))
+	if dataLen < 0 || dataLen > (len(data)-4)/4 {
+		return nil, errors.New("invalid TDD ciphertext: data truncated")
+	}
 	ct.Data = make([]int32, dataLen)
 	for i := 0; i < dataLen; i++ {
 		ct.Data[i] = int32(binary.LittleEndian.Uint32(data[4+i*4:]))

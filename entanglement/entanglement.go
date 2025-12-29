@@ -225,6 +225,10 @@ func SerializeNIZKProof(proof []byte) []byte {
 }
 
 // DeserializeNIZKProof deserializes bytes to a proof.
+// Returns nil if data is not exactly 32 bytes (expected proof length).
 func DeserializeNIZKProof(data []byte) []byte {
+	if len(data) != 32 {
+		return nil
+	}
 	return data
 }
