@@ -1,0 +1,52 @@
+# Binaries for programs and plugins
+/bin/
+# If you build Go binaries to project root
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Output of the go coverage tool
+coverage.out
+
+# Vendor directory
+/vendor/
+
+# Build directories
+_build/
+_output/
+
+# Go workspace local files
+Godeps/
+Godeps.json
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+
+# Logs
+*.log
+
+# Generated files
+*.out
+
+# Ignore compiled packages
+*.a
+
+# Ignore test binary
+*.test
+
+# Ignore temporary files
+tmp/
+
+# Keep go.mod and go.sum tracked
+# (do not ignore them)
