@@ -3,7 +3,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,8 +15,11 @@ import (
 	"time"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/entanglement"
 	"github.com/BackendStack21/k-mosaic-go/kem"
+	"github.com/BackendStack21/k-mosaic-go/problems/slss"
 	"github.com/BackendStack21/k-mosaic-go/sign"
+	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
 const (
@@ -164,12 +169,18 @@ func handleKEM(args []string) {
 		kemKeygen(args[1:])
 	case "encapsulate", "encap":
 		kemEncapsulate(args[1:])
+	case "encapsulate-deterministic", "encap-det":
+		kemEncapsulateDet(args[1:])
 	case "decapsulate", "decap":
 		kemDecapsulate(args[1:])
 	case "encrypt", "enc":
 		kemEncrypt(args[1:])
 	case "decrypt", "dec":
 		kemDecrypt(args[1:])
+	case "slss-debug":
+		kemSLSSDebug(args[1:])
+	case "pk-inspect":
+		kemPKInspect(args[1:])
 	case "help", "--help", "-h":
 		printKEMUsage()
 	default:
@@ -228,12 +239,18 @@ func kemKeygen(args []string) {
 
 	// Serialize key pair
 	pkBytes := kem.SerializePublicKey(&kp.PublicKey)
-	skBytes := kem.SerializeSecretKey(&kp.SecretKey)
+
+	// Convert secret key to JSON format
+	skJSON, err := secretKeyToJSON(&kp.SecretKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error serializing secret key: %v\n", err)
+		os.Exit(1)
+	}
 
 	export := KEMKeyPairExport{
 		SecurityLevel: string(config.SecurityLevel),
 		PublicKey:     encodeBytes(pkBytes, config.OutputFormat),
-		SecretKey:     encodeBytes(skBytes, config.OutputFormat),
+		SecretKey:     base64.StdEncoding.EncodeToString([]byte(skJSON)),
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -248,7 +265,7 @@ func kemKeygen(args []string) {
 	if config.Verbose {
 		fmt.Fprintf(os.Stderr, "Generated KEM key pair with security level: %s\n", config.SecurityLevel)
 		fmt.Fprintf(os.Stderr, "Public key size: %d bytes\n", len(pkBytes))
-		fmt.Fprintf(os.Stderr, "Secret key size: %d bytes\n", len(skBytes))
+		fmt.Fprintf(os.Stderr, "Secret key size: %d bytes (JSON)\n", len(skJSON))
 	}
 }
 
@@ -309,6 +326,160 @@ func kemEncapsulate(args []string) {
 	}
 }
 
+func kemEncapsulateDet(args []string) {
+	config := parseConfig(args)
+	pkFile := getArg(args, "--public-key", "-pk")
+	ephemeralHex := getArg(args, "--ephemeral-secret", "-es")
+
+	if pkFile == "" {
+		fmt.Fprintf(os.Stderr, "Error: --public-key is required\n")
+		os.Exit(1)
+	}
+
+	if ephemeralHex == "" {
+		fmt.Fprintf(os.Stderr, "Error: --ephemeral-secret is required (hex 64 chars)\n")
+		os.Exit(1)
+	}
+
+	ephemeral, err := hex.DecodeString(ephemeralHex)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid ephemeral-secret hex: %v\n", err)
+		os.Exit(1)
+	}
+	if len(ephemeral) != 32 {
+		fmt.Fprintf(os.Stderr, "Ephemeral secret must be exactly 32 bytes\n")
+		os.Exit(1)
+	}
+
+	// Load public key
+	pkData, err := loadKeyFromFile(pkFile, "public_key")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	pk, err := kem.DeserializePublicKey(pkData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error deserializing public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	start := time.Now()
+	result, err := kem.EncapsulateDeterministic(pk, ephemeral)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error encapsulating deterministically: %v\n", err)
+		os.Exit(1)
+	}
+
+	if config.Timing {
+		fmt.Fprintf(os.Stderr, "Deterministic encapsulation took: %v\n", elapsed)
+	}
+
+	ctBytes := kem.SerializeCiphertext(&result.Ciphertext)
+
+	export := EncapsulationExport{
+		Ciphertext:   encodeBytes(ctBytes, config.OutputFormat),
+		SharedSecret: encodeBytes(result.SharedSecret, config.OutputFormat),
+	}
+
+	output, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling output: %v\n", err)
+		os.Exit(1)
+	}
+
+	writeOutput(output, config.OutputFile)
+
+	if config.Verbose {
+		fmt.Fprintf(os.Stderr, "Encapsulation (deterministic) successful\n")
+		fmt.Fprintf(os.Stderr, "Ciphertext size: %d bytes\n", len(ctBytes))
+		fmt.Fprintf(os.Stderr, "Shared secret size: %d bytes\n", len(result.SharedSecret))
+	}
+}
+
+func kemPKInspect(args []string) {
+	config := parseConfig(args)
+	pkFile := getArg(args, "--public-key", "-pk")
+
+	if pkFile == "" {
+		fmt.Fprintf(os.Stderr, "Error: --public-key is required\n")
+		os.Exit(1)
+	}
+
+	pkData, err := loadKeyFromFile(pkFile, "public_key")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	off := 0
+	if len(pkData) < 4 {
+		fmt.Fprintf(os.Stderr, "Invalid public key: too short to read level\n")
+		os.Exit(1)
+	}
+	levelLen := int(binary.LittleEndian.Uint32(pkData[off:]))
+	off += 4 + levelLen
+	if off+4 > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: truncated\n")
+		os.Exit(1)
+	}
+	slssLen := int(binary.LittleEndian.Uint32(pkData[off:]))
+	off += 4
+	if off+slssLen > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: SLSS truncated\n")
+		os.Exit(1)
+	}
+	slssBytes := pkData[off : off+slssLen]
+	off += slssLen
+	if off+4 > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: truncated after SLSS\n")
+		os.Exit(1)
+	}
+	tddLen := int(binary.LittleEndian.Uint32(pkData[off:]))
+	off += 4
+	if off+tddLen > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: TDD truncated\n")
+		os.Exit(1)
+	}
+	tddBytes := pkData[off : off+tddLen]
+	off += tddLen
+	if off+4 > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: truncated after TDD\n")
+		os.Exit(1)
+	}
+	egrwLen := int(binary.LittleEndian.Uint32(pkData[off:]))
+	off += 4
+	if off+egrwLen > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: EGRW truncated\n")
+		os.Exit(1)
+	}
+	egrwBytes := pkData[off : off+egrwLen]
+	off += egrwLen
+	if off+32 > len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: binding truncated\n")
+		os.Exit(1)
+	}
+	embedded := pkData[off : off+32]
+
+	computed := entanglement.ComputeBinding(slssBytes, tddBytes, egrwBytes)
+	// Compute component hashes for comparison
+	slssHash := utils.SHA3256(slssBytes)
+	tddHash := utils.SHA3256(tddBytes)
+	egrwHash := utils.SHA3256(egrwBytes)
+
+	out := map[string]string{
+		"embedded_binding": encodeBytes(embedded, config.OutputFormat),
+		"computed_binding": encodeBytes(computed, config.OutputFormat),
+		"slss_hash":        encodeBytes(slssHash, config.OutputFormat),
+		"tdd_hash":         encodeBytes(tddHash, config.OutputFormat),
+		"egrw_hash":        encodeBytes(egrwHash, config.OutputFormat),
+	}
+	j, _ := json.MarshalIndent(out, "", "  ")
+	writeOutput(j, config.OutputFile)
+}
+
 func kemDecapsulate(args []string) {
 	config := parseConfig(args)
 	skFile := getArg(args, "--secret-key", "-sk")
@@ -320,8 +491,8 @@ func kemDecapsulate(args []string) {
 		os.Exit(1)
 	}
 
-	// Load keys
-	skData, err := loadKeyFromFile(skFile, "secret_key")
+	// Load secret key (handles JSON format)
+	sk, err := loadSecretKeyFromFile(skFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading secret key: %v\n", err)
 		os.Exit(1)
@@ -336,12 +507,6 @@ func kemDecapsulate(args []string) {
 	ctData, err := loadKeyFromFile(ctFile, "ciphertext")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading ciphertext: %v\n", err)
-		os.Exit(1)
-	}
-
-	sk, err := kem.DeserializeSecretKey(skData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error deserializing secret key: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -467,6 +632,86 @@ func kemEncrypt(args []string) {
 	}
 }
 
+func kemSLSSDebug(args []string) {
+	config := parseConfig(args)
+	pkFile := getArg(args, "--public-key", "-pk")
+	randomHex := getArg(args, "--randomness", "-r")
+	messageHex := getArg(args, "--message", "-m")
+
+	if pkFile == "" {
+		fmt.Fprintf(os.Stderr, "Error: --public-key is required\n")
+		os.Exit(1)
+	}
+
+	pkData, err := loadKeyFromFile(pkFile, "public_key")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	pk, err := kem.DeserializePublicKey(pkData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error deserializing public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Parse randomness from hex or use random
+	var randomness []byte
+	if randomHex != "" {
+		randomness, err = hex.DecodeString(randomHex)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid randomness hex: %v\n", err)
+			os.Exit(1)
+		}
+		if len(randomness) < 32 {
+			fmt.Fprintf(os.Stderr, "Randomness must be at least 32 bytes (hex length >= 64)\n")
+			os.Exit(1)
+		}
+	} else {
+		randomness = make([]byte, 32)
+		if _, err := rand.Read(randomness); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating randomness: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Parse message (default 32 zero bytes)
+	var message []byte
+	if messageHex != "" {
+		message, err = hex.DecodeString(messageHex)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid message hex: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		message = make([]byte, 32)
+	}
+
+	ct, debug, err := slss.DebugEncrypt(pk.SLSS, message, pk.Params.SLSS, randomness)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error during SLSS debug encrypt: %v\n", err)
+		os.Exit(1)
+	}
+
+	out := map[string]any{
+		"r_indices": debug.RIndices,
+		"r_values":  debug.RValues,
+		"e1_head":   debug.E1Head,
+		"e2_head":   debug.E2Head,
+		"u_head":    debug.UHead,
+		"v_head":    debug.VHead,
+		"u_len":     len(ct.U),
+		"v_len":     len(ct.V),
+	}
+
+	j, _ := json.MarshalIndent(out, "", "  ")
+	writeOutput(j, config.OutputFile)
+
+	if config.Verbose {
+		fmt.Fprintf(os.Stderr, "SLSS debug completed\n")
+	}
+}
+
 func kemDecrypt(args []string) {
 	config := parseConfig(args)
 	skFile := getArg(args, "--secret-key", "-sk")
@@ -478,8 +723,8 @@ func kemDecrypt(args []string) {
 		os.Exit(1)
 	}
 
-	// Load keys
-	skData, err := loadKeyFromFile(skFile, "secret_key")
+	// Load secret key (handles JSON format)
+	sk, err := loadSecretKeyFromFile(skFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading secret key: %v\n", err)
 		os.Exit(1)
@@ -494,12 +739,6 @@ func kemDecrypt(args []string) {
 	ctData, err := loadKeyFromFile(ctFile, "ciphertext")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading ciphertext: %v\n", err)
-		os.Exit(1)
-	}
-
-	sk, err := kem.DeserializeSecretKey(skData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error deserializing secret key: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -616,12 +855,18 @@ func signKeygen(args []string) {
 
 	// Serialize key pair
 	pkBytes := sign.SerializePublicKey(&kp.PublicKey)
-	skBytes := sign.SerializeSecretKey(&kp.SecretKey)
+
+	// Convert secret key to JSON format
+	skJSON, err := signSecretKeyToJSON(&kp.SecretKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error serializing secret key: %v\n", err)
+		os.Exit(1)
+	}
 
 	export := SignKeyPairExport{
 		SecurityLevel: string(config.SecurityLevel),
 		PublicKey:     encodeBytes(pkBytes, config.OutputFormat),
-		SecretKey:     encodeBytes(skBytes, config.OutputFormat),
+		SecretKey:     base64.StdEncoding.EncodeToString([]byte(skJSON)),
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -636,7 +881,7 @@ func signKeygen(args []string) {
 	if config.Verbose {
 		fmt.Fprintf(os.Stderr, "Generated signature key pair with security level: %s\n", config.SecurityLevel)
 		fmt.Fprintf(os.Stderr, "Public key size: %d bytes\n", len(pkBytes))
-		fmt.Fprintf(os.Stderr, "Secret key size: %d bytes\n", len(skBytes))
+		fmt.Fprintf(os.Stderr, "Secret key size: %d bytes (JSON)\n", len(skJSON))
 	}
 }
 
@@ -673,8 +918,8 @@ func signSign(args []string) {
 		}
 	}
 
-	// Load keys
-	skData, err := loadKeyFromFile(skFile, "secret_key")
+	// Load secret key (handles JSON format)
+	sk, err := loadSignSecretKeyFromFile(skFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading secret key: %v\n", err)
 		os.Exit(1)
@@ -683,12 +928,6 @@ func signSign(args []string) {
 	pkData, err := loadKeyFromFile(pkFile, "public_key")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading public key: %v\n", err)
-		os.Exit(1)
-	}
-
-	sk, err := sign.DeserializeSecretKey(skData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error deserializing secret key: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -1042,6 +1281,200 @@ func hasFlag(args []string, long, short string) bool {
 	return false
 }
 
+// secretKeyToJSON converts a secret key to JSON format.
+func secretKeyToJSON(sk *kmosaic.MOSAICSecretKey) (string, error) {
+	// Create JSON structure with lowercase a,b,c for TDD factors
+	skJSON := map[string]interface{}{
+		"slss": map[string]interface{}{
+			"s": sk.SLSS.S,
+		},
+		"tdd": map[string]interface{}{
+			"factors": map[string]interface{}{
+				"a": sk.TDD.Factors.A,
+				"b": sk.TDD.Factors.B,
+				"c": sk.TDD.Factors.C,
+			},
+		},
+		"egrw": map[string]interface{}{
+			"walk": sk.EGRW.Walk,
+		},
+		"seed":          sk.Seed,
+		"publicKeyHash": sk.PublicKeyHash,
+	}
+
+	jsonBytes, err := json.Marshal(skJSON)
+	if err != nil {
+		return "", err
+	}
+	return string(jsonBytes), nil
+}
+
+// signSecretKeyToJSON converts a signature secret key to JSON format.
+func signSecretKeyToJSON(sk *kmosaic.MOSAICSignSecretKey) (string, error) {
+	// Create JSON structure with lowercase a,b,c for TDD factors
+	skJSON := map[string]interface{}{
+		"slss": map[string]interface{}{
+			"s": sk.SLSS.S,
+		},
+		"tdd": map[string]interface{}{
+			"factors": map[string]interface{}{
+				"a": sk.TDD.Factors.A,
+				"b": sk.TDD.Factors.B,
+				"c": sk.TDD.Factors.C,
+			},
+		},
+		"egrw": map[string]interface{}{
+			"walk": sk.EGRW.Walk,
+		},
+		"seed":          sk.Seed,
+		"publicKeyHash": sk.PublicKeyHash,
+	}
+
+	jsonBytes, err := json.Marshal(skJSON)
+	if err != nil {
+		return "", err
+	}
+	return string(jsonBytes), nil
+}
+
+// secretKeyFromJSON converts JSON format secret key to MOSAICSecretKey
+func secretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSecretKey, error) {
+	var skJSON map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &skJSON); err != nil {
+		return nil, fmt.Errorf("failed to parse secret key JSON: %w", err)
+	}
+
+	sk := &kmosaic.MOSAICSecretKey{}
+
+	// Parse SLSS
+	if slss, ok := skJSON["slss"].(map[string]interface{}); ok {
+		if sArray, ok := slss["s"].([]interface{}); ok {
+			sk.SLSS.S = make([]int8, len(sArray))
+			for i, v := range sArray {
+				if num, ok := v.(float64); ok {
+					sk.SLSS.S[i] = int8(num)
+				}
+			}
+		}
+	}
+
+	// Parse TDD
+	if tdd, ok := skJSON["tdd"].(map[string]interface{}); ok {
+		if factors, ok := tdd["factors"].(map[string]interface{}); ok {
+			// Parse factor a
+			if aArray, ok := factors["a"].([]interface{}); ok {
+				sk.TDD.Factors.A = make([][]int32, len(aArray))
+				for i, v := range aArray {
+					if vec, ok := v.([]interface{}); ok {
+						sk.TDD.Factors.A[i] = make([]int32, len(vec))
+						for j, val := range vec {
+							if num, ok := val.(float64); ok {
+								sk.TDD.Factors.A[i][j] = int32(num)
+							}
+						}
+					}
+				}
+			}
+			// Parse factor b
+			if bArray, ok := factors["b"].([]interface{}); ok {
+				sk.TDD.Factors.B = make([][]int32, len(bArray))
+				for i, v := range bArray {
+					if vec, ok := v.([]interface{}); ok {
+						sk.TDD.Factors.B[i] = make([]int32, len(vec))
+						for j, val := range vec {
+							if num, ok := val.(float64); ok {
+								sk.TDD.Factors.B[i][j] = int32(num)
+							}
+						}
+					}
+				}
+			}
+			// Parse factor c
+			if cArray, ok := factors["c"].([]interface{}); ok {
+				sk.TDD.Factors.C = make([][]int32, len(cArray))
+				for i, v := range cArray {
+					if vec, ok := v.([]interface{}); ok {
+						sk.TDD.Factors.C[i] = make([]int32, len(vec))
+						for j, val := range vec {
+							if num, ok := val.(float64); ok {
+								sk.TDD.Factors.C[i][j] = int32(num)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Parse EGRW
+	if egrw, ok := skJSON["egrw"].(map[string]interface{}); ok {
+		if walkArray, ok := egrw["walk"].([]interface{}); ok {
+			sk.EGRW.Walk = make([]int, len(walkArray))
+			for i, v := range walkArray {
+				if num, ok := v.(float64); ok {
+					sk.EGRW.Walk[i] = int(num)
+				}
+			}
+		}
+	}
+
+	// Parse seed (supports both base64 string and number array)
+	if seedStr, ok := skJSON["seed"].(string); ok {
+		// Base64 encoded string (from json.Marshal on []byte)
+		decoded, err := base64.StdEncoding.DecodeString(seedStr)
+		if err == nil {
+			sk.Seed = decoded
+		}
+	} else if seedArray, ok := skJSON["seed"].([]interface{}); ok {
+		// Array of numbers
+		sk.Seed = make([]byte, len(seedArray))
+		for i, v := range seedArray {
+			if num, ok := v.(float64); ok {
+				sk.Seed[i] = byte(num)
+			}
+		}
+	}
+
+	// Parse publicKeyHash (supports both base64 string and number array)
+	if hashStr, ok := skJSON["publicKeyHash"].(string); ok {
+		// Base64 encoded string (from json.Marshal on []byte)
+		decoded, err := base64.StdEncoding.DecodeString(hashStr)
+		if err == nil {
+			sk.PublicKeyHash = decoded
+		}
+	} else if hashArray, ok := skJSON["publicKeyHash"].([]interface{}); ok {
+		// Array of numbers
+		sk.PublicKeyHash = make([]byte, len(hashArray))
+		for i, v := range hashArray {
+			if num, ok := v.(float64); ok {
+				sk.PublicKeyHash[i] = byte(num)
+			}
+		}
+	}
+
+	return sk, nil
+}
+
+// signSecretKeyFromJSON converts JSON format secret key to MOSAICSignSecretKey
+func signSecretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSignSecretKey, error) {
+	// Reuse the same parsing logic
+	sk, err := secretKeyFromJSON(jsonStr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to sign secret key
+	signSK := &kmosaic.MOSAICSignSecretKey{
+		SLSS:          sk.SLSS,
+		TDD:           sk.TDD,
+		EGRW:          sk.EGRW,
+		Seed:          sk.Seed,
+		PublicKeyHash: sk.PublicKeyHash,
+	}
+
+	return signSK, nil
+}
+
 func encodeBytes(data []byte, format OutputFormat) string {
 	switch format {
 	case FormatHex:
@@ -1063,6 +1496,70 @@ func decodeString(s string) ([]byte, error) {
 		return data, nil
 	}
 	return nil, fmt.Errorf("unable to decode string")
+}
+
+// loadSecretKeyFromFile loads a secret key from a file, handling both JSON and binary formats
+func loadSecretKeyFromFile(filename string) (*kmosaic.MOSAICSecretKey, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try to parse file as JSON keypair
+	var jsonData map[string]interface{}
+	if err := json.Unmarshal(data, &jsonData); err == nil {
+		// JSON format - extract secret_key field
+		if val, ok := jsonData["secret_key"]; ok {
+			if strVal, ok := val.(string); ok {
+				// Decode base64
+				skBytes, err := base64.StdEncoding.DecodeString(strVal)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode secret key: %w", err)
+				}
+				// Try to parse as JSON (new format)
+				if sk, err := secretKeyFromJSON(string(skBytes)); err == nil {
+					return sk, nil
+				}
+				// Fall back to binary format
+				return kem.DeserializeSecretKey(skBytes)
+			}
+		}
+	}
+
+	// Try raw binary
+	return kem.DeserializeSecretKey(data)
+}
+
+// loadSignSecretKeyFromFile loads a signature secret key from a file
+func loadSignSecretKeyFromFile(filename string) (*kmosaic.MOSAICSignSecretKey, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try to parse file as JSON keypair
+	var jsonData map[string]interface{}
+	if err := json.Unmarshal(data, &jsonData); err == nil {
+		// JSON format - extract secret_key field
+		if val, ok := jsonData["secret_key"]; ok {
+			if strVal, ok := val.(string); ok {
+				// Decode base64
+				skBytes, err := base64.StdEncoding.DecodeString(strVal)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode secret key: %w", err)
+				}
+				// Try to parse as JSON (new format)
+				if sk, err := signSecretKeyFromJSON(string(skBytes)); err == nil {
+					return sk, nil
+				}
+				// Fall back to binary format
+				return sign.DeserializeSecretKey(skBytes)
+			}
+		}
+	}
+
+	// Try raw binary
+	return sign.DeserializeSecretKey(data)
 }
 
 func loadKeyFromFile(filename, keyField string) ([]byte, error) {

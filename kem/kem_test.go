@@ -311,3 +311,25 @@ func TestDeserializeErrors(t *testing.T) {
 		t.Error("DeserializePublicKey should fail with invalid security level")
 	}
 }
+
+func TestDeserializePublicKeyRejectsInvalidBinding(t *testing.T) {
+	kp, err := GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	serialized := SerializePublicKey(&kp.PublicKey)
+	if len(serialized) < 40 {
+		t.Fatal("serialized public key unexpectedly short")
+	}
+
+	// Tamper with binding (last byte)
+	bad := make([]byte, len(serialized))
+	copy(bad, serialized)
+	bad[len(bad)-1] ^= 0xFF
+
+	_, err = DeserializePublicKey(bad)
+	if err == nil {
+		t.Error("DeserializePublicKey should reject invalid binding")
+	}
+}
