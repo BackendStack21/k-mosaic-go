@@ -235,14 +235,6 @@ func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte
 	return result
 }
 
-// Helper function
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // VerifyNIZKProof verifies a NIZK proof.
 // It verifies the proof is correctly bound to the ciphertext hashes and binding.
 func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bool {
@@ -259,17 +251,12 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bo
 
 	// Legacy compact proof (32 bytes): accept if non-zero
 	if len(proof) == 32 {
-		allZero := true
 		for _, b := range proof {
 			if b != 0 {
-				allZero = false
-				break
+				return true
 			}
 		}
-		if allZero {
-			return false
-		}
-		return true
+		return false
 	}
 
 	// Structured proof parsing

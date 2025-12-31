@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -416,30 +415,6 @@ func SerializePublicKey(pk *kmosaic.MOSAICPublicKey) []byte {
 	return result
 }
 
-// serializeParamsToJSON converts MOSAICParams to JSON string.
-func serializeParamsToJSON(params kmosaic.MOSAICParams) string {
-	// Use json.Marshal for proper encoding
-	data, err := json.Marshal(params)
-	if err != nil {
-		// Fallback to manual construction if Marshal fails
-		return fmt.Sprintf(`{"level":"%s","slss":{"n":%d,"m":%d,"q":%d,"w":%d,"sigma":%g},"tdd":{"n":%d,"r":%d,"q":%d,"sigma":%g},"egrw":{"p":%d,"k":%d}}`,
-			params.Level,
-			params.SLSS.N, params.SLSS.M, params.SLSS.Q, params.SLSS.W, params.SLSS.Sigma,
-			params.TDD.N, params.TDD.R, params.TDD.Q, params.TDD.Sigma,
-			params.EGRW.P, params.EGRW.K)
-	}
-	return string(data)
-}
-
-// deserializeParamsFromJSON parses MOSAICParams from JSON string.
-func deserializeParamsFromJSON(jsonStr string) (kmosaic.MOSAICParams, error) {
-	var params kmosaic.MOSAICParams
-	err := json.Unmarshal([]byte(jsonStr), &params)
-	if err != nil {
-		return params, fmt.Errorf("failed to parse params JSON: %w", err)
-	}
-	return params, nil
-}
 
 // SerializeCiphertext serializes a ciphertext.
 // Format: [c1_len:4][c1_data][c2_len:4][c2_data][c3_len:4][c3_data][proof_data]
@@ -643,7 +618,6 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	}
 	pk.Binding = make([]byte, 32)
 	copy(pk.Binding, data[offset:offset+32])
-	offset += 32
 
 	// Validate binding to prevent component substitution attacks
 	slssBytes := slss.SerializePublicKey(pk.SLSS)
