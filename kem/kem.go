@@ -415,7 +415,6 @@ func SerializePublicKey(pk *kmosaic.MOSAICPublicKey) []byte {
 	return result
 }
 
-
 // SerializeCiphertext serializes a ciphertext.
 // Format: [c1_len:4][c1_data][c2_len:4][c2_data][c3_len:4][c3_data][proof_data]
 // Note: proof has no length prefix - it extends to end of buffer
