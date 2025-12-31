@@ -63,6 +63,7 @@ k-mosaic-cli sign verify -pk sign.json -sig sig.json
 For comprehensive CLI documentation, installation methods, security best practices, key management workflows, and detailed command reference, see: **[CLI.md](CLI.md)**
 
 Key topics in CLI.md:
+
 - Installation methods (source, go install, multi-platform builds)
 - Complete encryption and signature workflows
 - Security best practices and key management
@@ -74,6 +75,7 @@ Key topics in CLI.md:
 package main
 
 import (
+    "bytes"
     "fmt"
     kmosaic "github.com/BackendStack21/k-mosaic-go"
     "github.com/BackendStack21/k-mosaic-go/kem"
@@ -82,30 +84,30 @@ import (
 
 func main() {
     // Key Encapsulation
-    kp, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
-    ct, ss1, _ := kem.Encapsulate(&kp.PublicKey)
-    ss2, _ := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, ct)
-    fmt.Printf("Shared secrets match: %v\n", bytes.Equal(ss1, ss2))
+    kemKeyPair, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
+    ciphertext, senderSecret, _ := kem.Encapsulate(&kemKeyPair.PublicKey)
+    recipientSecret, _ := kem.Decapsulate(&kemKeyPair.SecretKey, &kemKeyPair.PublicKey, ciphertext)
+    fmt.Printf("Shared secrets match: %v\n", bytes.Equal(senderSecret, recipientSecret))
 
     // Digital Signatures
-    signKP, _ := sign.GenerateKeyPair(kmosaic.MOS_128)
+    signKeyPair, _ := sign.GenerateKeyPair(kmosaic.MOS_128)
     message := []byte("Hello, post-quantum world!")
-    sig, _ := sign.Sign(&signKP.SecretKey, &signKP.PublicKey, message)
-    valid := sign.Verify(&signKP.PublicKey, message, sig)
-    fmt.Printf("Signature valid: %v\n", valid)
+    signature, _ := sign.Sign(&signKeyPair.SecretKey, &signKeyPair.PublicKey, message)
+    isValid := sign.Verify(&signKeyPair.PublicKey, message, signature)
+    fmt.Printf("Signature valid: %v\n", isValid)
 }
 ```
 
 ## Benchmarks (Apple M2 Pro)
 
-| Operation       | MOS_128   | MOS_256   |
-| --------------- | --------- | --------- |
-| KEM KeyGen      | 6.29 ms   | 22.43 ms  |
-| KEM Encapsulate | 0.32 ms   | 0.95 ms   |
-| KEM Decapsulate | 0.38 ms   | 1.06 ms   |
-| Sign KeyGen     | 6.22 ms   | 22.49 ms  |
-| Sign            | 12.07 μs  | 21.95 μs  |
-| Verify          | 2.44 ms   | 9.13 ms   |
+| Operation       | MOS_128  | MOS_256  |
+| --------------- | -------- | -------- |
+| KEM KeyGen      | 6.29 ms  | 22.43 ms |
+| KEM Encapsulate | 0.32 ms  | 0.95 ms  |
+| KEM Decapsulate | 0.38 ms  | 1.06 ms  |
+| Sign KeyGen     | 6.22 ms  | 22.49 ms |
+| Sign            | 12.07 μs | 21.95 μs |
+| Verify          | 2.44 ms  | 9.13 ms  |
 
 _See [BenchmarkReport.md](BenchmarkReport.md) for comprehensive detailed benchmark results, performance analysis, and methodology._
 
