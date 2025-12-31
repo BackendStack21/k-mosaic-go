@@ -58,7 +58,7 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)   | Memory (B/op)     | Allocations |
 | ------- | ------------ | ----------- | ----------------- | ----------- |
-| MOS-128 | 376,690      | **0.38 ms** | 112,156 (~109 KB)   | 185         |
+| MOS-128 | 376,690      | **0.38 ms** | 112,156 (~109 KB) | 185         |
 | MOS-256 | 1,055,179    | **1.06 ms** | 182,942 (~179 KB) | 143         |
 
 **Analysis:**
@@ -83,7 +83,7 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)   | Memory (B/op)     | Allocations |
 | ------- | ------------ | ----------- | ----------------- | ----------- |
-| MOS-128 | 407,390      | **0.41 ms** | 113,621 (~111 KB)   | 192         |
+| MOS-128 | 407,390      | **0.41 ms** | 113,621 (~111 KB) | 192         |
 | MOS-256 | 987,145      | **0.99 ms** | 183,241 (~179 KB) | 150         |
 
 **Analysis:**
