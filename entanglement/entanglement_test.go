@@ -102,7 +102,7 @@ func TestBinding(t *testing.T) {
 func TestNIZKProof(t *testing.T) {
 	// Mock data for NIZK - must match security requirements
 	secret := []byte("secret")
-	shares := [][]byte{[]byte("share1"), []byte("share2")}
+	shares := [][]byte{[]byte("share1"), []byte("share2"), []byte("share3")}
 	// NIZK requires exactly 3 ciphertext hashes, each 32 bytes
 	hashes := [][]byte{
 		make([]byte, 32),
@@ -115,38 +115,35 @@ func TestNIZKProof(t *testing.T) {
 			hashes[i][j] = byte(i*32 + j)
 		}
 	}
-	// Binding must be 32 bytes
-	binding := make([]byte, 32)
-	for i := range binding {
-		binding[i] = byte(i + 100)
-	}
 	seed := []byte("seed")
 
 	proof := GenerateNIZKProof(secret, shares, hashes, seed)
-	if len(proof) != 32 {
-		t.Errorf("GenerateNIZKProof returned wrong length: %d", len(proof))
+	if len(proof) == 0 {
+		t.Fatalf("GenerateNIZKProof returned empty proof")
 	}
 
-	if !VerifyNIZKProof(proof, hashes, binding) {
-		t.Error("VerifyNIZKProof failed")
+	if !VerifyNIZKProof(proof, hashes, secret) {
+		t.Error("VerifyNIZKProof failed for structured proof")
 	}
 
-	// Test serialization
+	// Test serialization roundtrip (identity)
 	serialized := SerializeNIZKProof(proof)
-	// DeserializeNIZKProof is not implemented/exported in the snippet I saw,
-	// but SerializeNIZKProof returns []byte so it's likely identity or simple copy.
 	if !bytes.Equal(proof, serialized) {
 		t.Error("Serialization roundtrip failed")
 	}
 
 	// Test that invalid inputs are rejected
-	if VerifyNIZKProof(proof, hashes, nil) {
-		t.Error("VerifyNIZKProof should reject nil binding")
+	if VerifyNIZKProof(make([]byte, 32), hashes, secret) {
+		t.Error("VerifyNIZKProof should reject all-zero compact proof")
 	}
-	if VerifyNIZKProof(proof, hashes[:2], binding) {
+	if VerifyNIZKProof(proof, hashes[:2], secret) {
 		t.Error("VerifyNIZKProof should reject wrong number of hashes")
 	}
-	if VerifyNIZKProof(make([]byte, 32), hashes, binding) {
-		t.Error("VerifyNIZKProof should reject all-zero proof")
+	// Tamper a single byte in proof and expect rejection
+	proofTampered := make([]byte, len(proof))
+	copy(proofTampered, proof)
+	proofTampered[len(proofTampered)-1] ^= 0xFF
+	if VerifyNIZKProof(proofTampered, hashes, secret) {
+		t.Error("VerifyNIZKProof should reject tampered proof")
 	}
 }

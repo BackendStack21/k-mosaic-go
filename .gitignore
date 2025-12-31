@@ -50,3 +50,7 @@ tmp/
 
 # Keep go.mod and go.sum tracked
 # (do not ignore them)
+
+# Ignore local CLI tool binary
+k-mosaic-cli
+cmd/k-mosaic-cli/k-mosaic-cli

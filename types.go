@@ -28,33 +28,33 @@ const (
 
 // SLSSParams contains parameters for the Sparse Lattice Subset Sum problem.
 type SLSSParams struct {
-	N     int     // Lattice dimension
-	M     int     // Number of equations
-	Q     int     // Prime modulus
-	W     int     // Sparsity weight
-	Sigma float64 // Error standard deviation
+	N     int     `json:"n"`     // Lattice dimension
+	M     int     `json:"m"`     // Number of equations
+	Q     int     `json:"q"`     // Prime modulus
+	W     int     `json:"w"`     // Sparsity weight
+	Sigma float64 `json:"sigma"` // Error standard deviation
 }
 
 // TDDParams contains parameters for the Tensor Decomposition Distinguishing problem.
 type TDDParams struct {
-	N     int     // Tensor dimension
-	R     int     // Tensor rank
-	Q     int     // Modulus
-	Sigma float64 // Noise standard deviation
+	N     int     `json:"n"`     // Tensor dimension
+	R     int     `json:"r"`     // Tensor rank
+	Q     int     `json:"q"`     // Modulus
+	Sigma float64 `json:"sigma"` // Noise standard deviation
 }
 
 // EGRWParams contains parameters for the Expander Graph Random Walk problem.
 type EGRWParams struct {
-	P int // Prime for SL(2, Z_p)
-	K int // Walk length
+	P int `json:"p"` // Prime for SL(2, Z_p)
+	K int `json:"k"` // Walk length
 }
 
 // MOSAICParams contains the complete parameter set for a security level.
 type MOSAICParams struct {
-	Level SecurityLevel
-	SLSS  SLSSParams
-	TDD   TDDParams
-	EGRW  EGRWParams
+	Level SecurityLevel `json:"level"`
+	SLSS  SLSSParams    `json:"slss"`
+	TDD   TDDParams     `json:"tdd"`
+	EGRW  EGRWParams    `json:"egrw"`
 }
 
 // =============================================================================

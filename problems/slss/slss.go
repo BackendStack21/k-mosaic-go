@@ -132,7 +132,7 @@ func matTVecMul(A []int32, v []int32, m, n, q int) []int32 {
 func vecAdd(a, b []int32, q int) []int32 {
 	result := make([]int32, len(a))
 	for i := range a {
-		result[i] = fastMod(int64(a[i])+int64(b[i]), q)
+		result[i] = mod(int64(a[i])+int64(b[i]), q)
 	}
 	return result
 }
@@ -369,6 +369,86 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 	}, nil
 }
 
+// DebugInfo for SLSS encryption internals
+type SlssDebugInfo struct {
+	RIndices []int   `json:"r_indices"`
+	RValues  []int8  `json:"r_values"`
+	E1Head   []int32 `json:"e1_head"`
+	E2Head   []int32 `json:"e2_head"`
+	UHead    []int32 `json:"u_head"`
+	VHead    []int32 `json:"v_head"`
+}
+
+// DebugEncrypt performs SLSS encryption but also returns internal debug information
+func DebugEncrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams, randomness []byte) (*kmosaic.SLSSCiphertext, *SlssDebugInfo, error) {
+	if len(randomness) < 32 {
+		return nil, nil, errors.New("randomness must be at least 32 bytes")
+	}
+	if len(message) > utils.MaxMessageSize {
+		return nil, nil, errors.New("message exceeds maximum allowed size")
+	}
+
+	n, m, q, sigma := params.N, params.M, params.Q, params.Sigma
+
+	// Sample ephemeral values (with domain separation as in Encrypt)
+	rSeed := utils.HashWithDomain(DomainEphemeral, randomness)
+	e1Seed := utils.HashWithDomain(DomainError1, randomness)
+	e2Seed := utils.HashWithDomain(DomainError2, randomness)
+
+	r := sampleSparseVector(rSeed, m, params.W)
+	e1 := sampleError(e1Seed, n, sigma)
+	e2 := sampleError(e2Seed, len(message)*8, sigma)
+
+	// Convert r to int32 for matTVecMul
+	rInt32 := make([]int32, len(r))
+	for i, v := range r {
+		rInt32[i] = int32(v)
+	}
+
+	ATr := matTVecMul(pk.A, rInt32, m, n, q)
+	u := vecAdd(ATr, e1, q)
+
+	tTr := innerProduct(pk.T, r, q)
+	encoded := encodeMessage(message, q)
+
+	v := make([]int32, len(encoded))
+	for i := range encoded {
+		val := int64(tTr) + int64(e2[i%len(e2)]) + int64(encoded[i])
+		v[i] = mod(val, q)
+	}
+
+	// Collect debug info (small heads)
+	debug := &SlssDebugInfo{}
+	// Record non-zero indices and values for r (first up to 16)
+	for i := 0; i < len(r) && len(debug.RIndices) < 16; i++ {
+		if r[i] != 0 {
+			debug.RIndices = append(debug.RIndices, i)
+			debug.RValues = append(debug.RValues, r[i])
+		}
+	}
+	// Heads of error and ciphertext components
+	k := func(arr []int32, n int) []int32 {
+		if len(arr) < n {
+			n = len(arr)
+		}
+		out := make([]int32, n)
+		copy(out, arr[:n])
+		return out
+	}
+	debug.E1Head = k(e1, 8)
+	debug.E2Head = k(e2, 8)
+	debug.UHead = k(u, 8)
+	debug.VHead = k(v, 8)
+
+	// Zeroize ephemeral values
+	utils.ZeroizeInt32(ATr)
+	utils.ZeroizeInt32(e1)
+	utils.ZeroizeInt32(e2)
+	utils.ZeroizeInt32(encoded)
+
+	return &kmosaic.SLSSCiphertext{U: u, V: v}, debug, nil
+}
+
 // Encrypt encrypts a message fragment using SLSS
 func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams, randomness []byte) (*kmosaic.SLSSCiphertext, error) {
 	if len(randomness) < 32 {
@@ -445,14 +525,16 @@ func SerializePublicKey(pk kmosaic.SLSSPublicKey) []byte {
 	tBytes := len(pk.T) * 4
 	result := make([]byte, 8+aBytes+tBytes)
 
-	binary.LittleEndian.PutUint32(result[0:], uint32(len(pk.A)))
+	// Write byte length (not element count)
+	binary.LittleEndian.PutUint32(result[0:], uint32(aBytes))
 	offset := 4
 	for i, v := range pk.A {
 		binary.LittleEndian.PutUint32(result[offset+i*4:], uint32(v))
 	}
 	offset += aBytes
 
-	binary.LittleEndian.PutUint32(result[offset:], uint32(len(pk.T)))
+	// Write byte length (not element count)
+	binary.LittleEndian.PutUint32(result[offset:], uint32(tBytes))
 	offset += 4
 	for i, v := range pk.T {
 		binary.LittleEndian.PutUint32(result[offset+i*4:], uint32(v))
@@ -470,16 +552,16 @@ func DeserializePublicKey(data []byte) (*kmosaic.SLSSPublicKey, error) {
 	pk := &kmosaic.SLSSPublicKey{}
 	offset := 0
 
-	rawA := binary.LittleEndian.Uint32(data[offset:])
-	if rawA > uint32(utils.MaxMatrixElements) {
+	// Read byte length (not element count)
+	aBytes := int(binary.LittleEndian.Uint32(data[offset:]))
+	if aBytes%4 != 0 {
+		return nil, errors.New("invalid SLSS public key: A length not multiple of 4")
+	}
+	aLen := aBytes / 4
+	if aLen > utils.MaxMatrixElements {
 		return nil, errors.New("invalid SLSS public key: A length exceeds limit")
 	}
-	aLen := int(rawA)
 	offset += 4
-	aBytes, err := utils.SafeMultiply(aLen, 4)
-	if err != nil {
-		return nil, errors.New("invalid SLSS public key: A length overflow")
-	}
 	if offset+aBytes > len(data) {
 		return nil, errors.New("invalid SLSS public key: A data truncated")
 	}
@@ -492,16 +574,16 @@ func DeserializePublicKey(data []byte) (*kmosaic.SLSSPublicKey, error) {
 	if offset+4 > len(data) {
 		return nil, errors.New("invalid SLSS public key: missing T length")
 	}
-	rawT := binary.LittleEndian.Uint32(data[offset:])
-	if rawT > uint32(utils.MaxVectorLength) {
+	// Read byte length (not element count)
+	tBytes := int(binary.LittleEndian.Uint32(data[offset:]))
+	if tBytes%4 != 0 {
+		return nil, errors.New("invalid SLSS public key: T length not multiple of 4")
+	}
+	tLen := tBytes / 4
+	if tLen > utils.MaxVectorLength {
 		return nil, errors.New("invalid SLSS public key: T length exceeds limit")
 	}
-	tLen := int(rawT)
 	offset += 4
-	tBytes, err := utils.SafeMultiply(tLen, 4)
-	if err != nil {
-		return nil, errors.New("invalid SLSS public key: T length overflow")
-	}
 	if offset+tBytes > len(data) {
 		return nil, errors.New("invalid SLSS public key: T data truncated")
 	}

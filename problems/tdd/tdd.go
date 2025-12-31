@@ -356,8 +356,10 @@ func Decrypt(ct *kmosaic.TDDCiphertext, sk kmosaic.TDDSecretKey, pk kmosaic.TDDP
 
 // SerializePublicKey serializes TDD public key
 func SerializePublicKey(pk kmosaic.TDDPublicKey) []byte {
-	result := make([]byte, 4+len(pk.T)*4)
-	binary.LittleEndian.PutUint32(result[0:], uint32(len(pk.T)))
+	tBytes := len(pk.T) * 4
+	result := make([]byte, 4+tBytes)
+	// Write byte length (not element count)
+	binary.LittleEndian.PutUint32(result[0:], uint32(tBytes))
 	for i, v := range pk.T {
 		binary.LittleEndian.PutUint32(result[4+i*4:], uint32(v))
 	}
@@ -371,16 +373,16 @@ func DeserializePublicKey(data []byte) (*kmosaic.TDDPublicKey, error) {
 	}
 
 	pk := &kmosaic.TDDPublicKey{}
-	raw := binary.LittleEndian.Uint32(data[0:])
-	if raw > uint32(utils.MaxTensorElements) {
+	// Read byte length (not element count)
+	tBytes := int(binary.LittleEndian.Uint32(data[0:]))
+	if tBytes%4 != 0 {
+		return nil, errors.New("invalid TDD public key: T length not multiple of 4")
+	}
+	tLen := tBytes / 4
+	if tLen > utils.MaxTensorElements {
 		return nil, errors.New("invalid TDD public key: T length exceeds limit")
 	}
-	tLen := int(raw)
-	requiredBytes, err := utils.SafeMultiply(tLen, 4)
-	if err != nil {
-		return nil, errors.New("invalid TDD public key: T length overflow")
-	}
-	if 4+requiredBytes > len(data) {
+	if 4+tBytes > len(data) {
 		return nil, errors.New("invalid TDD public key: T data truncated")
 	}
 	pk.T = make([]int32, tLen)

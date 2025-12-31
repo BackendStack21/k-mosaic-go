@@ -2,7 +2,10 @@
 package entanglement
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
+	"strconv"
 
 	"github.com/BackendStack21/k-mosaic-go/utils"
 )
@@ -99,7 +102,7 @@ func SecretShareDeterministic(secret []byte, n int, seed []byte) ([][]byte, erro
 
 	// Generate n-1 deterministic shares
 	for i := 0; i < n-1; i++ {
-		domain := DomainShare + "-" + string(rune('0'+i))
+		domain := DomainShare + "-" + strconv.Itoa(i)
 		shareSeed := utils.HashWithDomain(domain, seed)
 		shares[i] = utils.Shake256(shareSeed, len(secret))
 	}
@@ -120,8 +123,15 @@ func SecretShareDeterministic(secret []byte, n int, seed []byte) ([][]byte, erro
 
 // ComputeBinding computes the cross-component binding hash.
 // It binds the public keys of the three components (SLSS, TDD, EGRW) together.
+// Uses three-layer binding with per-component domain separation for defense-in-depth.
 func ComputeBinding(slssBytes, tddBytes, egrwBytes []byte) []byte {
-	return utils.HashWithDomain(DomainBind, utils.HashConcat(slssBytes, tddBytes, egrwBytes))
+	// Three-layer binding with domain separation
+	slssHash := utils.HashWithDomain(DomainBind+"-slss", slssBytes)
+	tddHash := utils.HashWithDomain(DomainBind+"-tdd", tddBytes)
+	egrwHash := utils.HashWithDomain(DomainBind+"-egrw", egrwBytes)
+
+	// Final binding combines all three
+	return utils.HashWithDomain(DomainBind+"-final", utils.HashConcat(slssHash, tddHash, egrwHash))
 }
 
 // BindingCommitment represents a commitment with its opening.
@@ -170,48 +180,166 @@ type NIZKProof struct {
 // In this simplified implementation, it acts as a binding of all inputs.
 // A full implementation would use a Sigma protocol with Fiat-Shamir transform.
 func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte, seed []byte) []byte {
-	// Simplified NIZK: hash of all components
-	proofData := append([]byte{}, seed...)
-	for _, share := range shares {
-		proofData = append(proofData, share...)
+	// Structured NIZK (Fiat-Shamir) proof generation
+	if len(shares) != 3 || len(ciphertextHashes) != 3 {
+		return nil
 	}
-	for _, hash := range ciphertextHashes {
-		proofData = append(proofData, hash...)
+
+	commitments := make([][]byte, 3)
+	commitRandomness := make([][]byte, 3)
+	for i := 0; i < 3; i++ {
+		domain := DomainNIZK + "-commit-" + strconv.Itoa(i)
+		domainHash := utils.HashWithDomain(domain, seed)
+
+		r := utils.SHA3256(domainHash)
+		commitRandomness[i] = r
+
+		concatInput := utils.HashConcat(shares[i], r, ciphertextHashes[i])
+
+		commitments[i] = utils.HashWithDomain(DomainNIZK+"-com", concatInput)
 	}
-	return utils.HashWithDomain(DomainNIZK, proofData)
+
+	secretMsg := utils.HashWithDomain(DomainNIZK+"-msg", secret)
+
+	challengeInput := utils.HashConcat(secretMsg, commitments[0], commitments[1], commitments[2], ciphertextHashes[0], ciphertextHashes[1], ciphertextHashes[2])
+
+	challenge := utils.SHA3256(challengeInput)
+
+	responses := make([][]byte, 3)
+	for i := 0; i < 3; i++ {
+		domain := DomainNIZK + "-mask-" + strconv.Itoa(i)
+		domainHash := utils.HashWithDomain(domain, challenge)
+
+		fullMask := utils.SHA3256(domainHash)
+
+		mask := fullMask[:len(shares[i])]
+
+		resp := make([]byte, len(shares[i])+32)
+		for j := 0; j < len(shares[i]); j++ {
+			resp[j] = shares[i][j] ^ mask[j]
+		}
+		copy(resp[len(shares[i]):], commitRandomness[i])
+		responses[i] = resp
+	}
+
+	parts := [][]byte{challenge, commitments[0], commitments[1], commitments[2], responses[0], responses[1], responses[2]}
+
+	buf := &bytes.Buffer{}
+	_ = binary.Write(buf, binary.LittleEndian, uint32(len(parts)))
+	for _, p := range parts {
+		_ = binary.Write(buf, binary.LittleEndian, uint32(len(p)))
+		buf.Write(p)
+	}
+
+	result := buf.Bytes()
+	return result
 }
 
 // VerifyNIZKProof verifies a NIZK proof.
 // It verifies the proof is correctly bound to the ciphertext hashes and binding.
-func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, binding []byte) bool {
-	// Check proof has correct length
-	if len(proof) != 32 {
-		return false
-	}
-
-	// Verify proof is not all zeros (trivial forgery attempt)
-	allZero := true
-	for _, b := range proof {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		return false
-	}
-
-	// Verify binding is present and correct length
-	if len(binding) != 32 {
-		return false
-	}
-
-	// Verify all ciphertext hashes are present and correct length
+func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bool {
+	// Validate ciphertext hashes first before accessing
 	if len(ciphertextHashes) != 3 {
 		return false
 	}
+
 	for _, h := range ciphertextHashes {
 		if len(h) != 32 {
+			return false
+		}
+	}
+
+	// Legacy compact proof (32 bytes): accept if non-zero
+	if len(proof) == 32 {
+		for _, b := range proof {
+			if b != 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Structured proof parsing
+	if len(proof) < 4 {
+		return false
+	}
+	off := 0
+	numParts := int(binary.LittleEndian.Uint32(proof[off:]))
+	off += 4
+	if numParts != 7 {
+		return false
+	}
+	parts := make([][]byte, numParts)
+	const MaxProofPartSize = 1024 * 1024 // 1MB maximum part size
+
+	for i := 0; i < numParts; i++ {
+		if off+4 > len(proof) {
+			return false
+		}
+		partLen := int(binary.LittleEndian.Uint32(proof[off:]))
+		off += 4
+
+		// Validate part size to prevent DoS via memory exhaustion
+		if partLen < 0 || partLen > MaxProofPartSize {
+			return false
+		}
+		if off+partLen > len(proof) {
+			return false
+		}
+
+		parts[i] = make([]byte, partLen)
+		copy(parts[i], proof[off:off+partLen])
+		off += partLen
+	}
+
+	challenge := parts[0]
+
+	// Validate challenge length (must be 32 bytes for SHA3-256)
+	if len(challenge) != 32 {
+		return false
+	}
+
+	commitments := parts[1:4]
+	responses := parts[4:7]
+
+	// Recompute challenge
+	secretMsg := utils.HashWithDomain(DomainNIZK+"-msg", message)
+
+	expectedChallengeInput := utils.HashConcat(secretMsg, commitments[0], commitments[1], commitments[2], ciphertextHashes[0], ciphertextHashes[1], ciphertextHashes[2])
+
+	expectedChallenge := utils.SHA3256(expectedChallengeInput)
+
+	if !utils.ConstantTimeEqual(challenge, expectedChallenge) {
+		return false
+	}
+
+	// Verify each response
+	for i := 0; i < 3; i++ {
+		resp := responses[i]
+		if len(resp) < 32 {
+			return false
+		}
+		shareLen := len(resp) - 32
+
+		commitRandomness := resp[shareLen:]
+
+		domain := DomainNIZK + "-mask-" + strconv.Itoa(i)
+		domainHash := utils.HashWithDomain(domain, challenge)
+
+		fullMask := utils.SHA3256(domainHash)
+
+		mask := fullMask[:shareLen]
+
+		share := make([]byte, shareLen)
+		for j := 0; j < shareLen; j++ {
+			share[j] = resp[j] ^ mask[j]
+		}
+
+		concatInput := utils.HashConcat(share, commitRandomness, ciphertextHashes[i])
+
+		expectedCom := utils.HashWithDomain(DomainNIZK+"-com", concatInput)
+
+		if !utils.ConstantTimeEqual(expectedCom, commitments[i]) {
 			return false
 		}
 	}
@@ -219,16 +347,12 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, binding []byte) bo
 	return true
 }
 
-// SerializeNIZKProof serializes the proof to bytes.
+// SerializeNIZKProof returns the serialized proof as-is.
 func SerializeNIZKProof(proof []byte) []byte {
 	return proof
 }
 
-// DeserializeNIZKProof deserializes bytes to a proof.
-// Returns nil if data is not exactly 32 bytes (expected proof length).
+// DeserializeNIZKProof returns the proof bytes; no parsing here (verification parses structure).
 func DeserializeNIZKProof(data []byte) []byte {
-	if len(data) != 32 {
-		return nil
-	}
 	return data
 }

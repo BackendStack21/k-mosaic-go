@@ -1,6 +1,6 @@
 # kMOSAIC Go Benchmark Report
 
-**Date:** December 29, 2025  
+**Date:** December 31, 2025  
 **Platform:** macOS (darwin/arm64)  
 **CPU:** Apple M2 Pro  
 **Go Version:** Latest stable
@@ -15,12 +15,12 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Metric          | MOS-128  | MOS-256  | Slowdown Factor |
 | --------------- | -------- | -------- | --------------- |
-| KEM KeyGen      | 6.04 ms  | 22.25 ms | **3.68×**       |
-| KEM Encapsulate | 0.30 ms  | 0.93 ms  | **3.07×**       |
-| KEM Decapsulate | 0.34 ms  | 0.99 ms  | **2.94×**       |
-| Sign KeyGen     | 6.11 ms  | 22.31 ms | **3.65×**       |
-| Sign            | 0.012 ms | 0.022 ms | **1.86×**       |
-| Verify          | 2.36 ms  | 9.11 ms  | **3.86×**       |
+| KEM KeyGen      | 6.29 ms  | 22.43 ms | **3.56×**       |
+| KEM Encapsulate | 0.32 ms  | 0.95 ms  | **2.99×**       |
+| KEM Decapsulate | 0.38 ms  | 1.06 ms  | **2.80×**       |
+| Sign KeyGen     | 6.22 ms  | 22.49 ms | **3.62×**       |
+| Sign            | 0.012 ms | 0.022 ms | **1.82×**       |
+| Verify          | 2.44 ms  | 9.13 ms  | **3.74×**       |
 
 ---
 
@@ -32,12 +32,12 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)    | Memory (B/op)          | Allocations |
 | ------- | ------------ | ------------ | ---------------------- | ----------- |
-| MOS-128 | 6,041,387    | **6.04 ms**  | 3,703,413 (~3.53 MB)   | 314         |
-| MOS-256 | 22,250,110   | **22.25 ms** | 14,269,288 (~13.61 MB) | 422         |
+| MOS-128 | 6,294,439    | **6.29 ms**  | 3,703,685 (~3.53 MB)   | 317         |
+| MOS-256 | 22,426,476   | **22.43 ms** | 14,269,239 (~13.61 MB) | 424         |
 
 **Analysis:**
 
-- MOS-256 key generation is **3.68× slower** than MOS-128
+- MOS-256 key generation is **3.56× slower** than MOS-128
 - Memory consumption increases by **3.85×** (from ~3.5 MB to ~13.6 MB)
 - The higher cost stems from larger lattice dimensions, tensor sizes, and expander graph parameters
 
@@ -45,12 +45,12 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)   | Memory (B/op)     | Allocations |
 | ------- | ------------ | ----------- | ----------------- | ----------- |
-| MOS-128 | 304,337      | **0.30 ms** | 63,132 (~62 KB)   | 89          |
-| MOS-256 | 934,400      | **0.93 ms** | 121,369 (~118 KB) | 110         |
+| MOS-128 | 316,474      | **0.32 ms** | 64,527 (~63 KB)   | 121         |
+| MOS-256 | 948,806      | **0.95 ms** | 121,371 (~118 KB) | 110         |
 
 **Analysis:**
 
-- MOS-256 encapsulation is **3.07× slower** than MOS-128
+- MOS-256 encapsulation is **3.00× slower** than MOS-128
 - Memory usage nearly doubles (1.92×)
 - Allocation count remains low, indicating efficient allocation patterns
 
@@ -58,12 +58,12 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)   | Memory (B/op)     | Allocations |
 | ------- | ------------ | ----------- | ----------------- | ----------- |
-| MOS-128 | 336,870      | **0.34 ms** | 97,561 (~95 KB)   | 122         |
-| MOS-256 | 991,434      | **0.99 ms** | 182,938 (~179 KB) | 143         |
+| MOS-128 | 376,690      | **0.38 ms** | 112,156 (~109 KB) | 185         |
+| MOS-256 | 1,055,179    | **1.06 ms** | 182,942 (~179 KB) | 143         |
 
 **Analysis:**
 
-- MOS-256 decapsulation is **2.94× slower** than MOS-128
+- MOS-256 decapsulation is **2.80× slower** than MOS-128
 - Decapsulation is slightly slower than encapsulation (~10% overhead) at both levels
 - Memory overhead ratio is 1.87×
 
@@ -71,8 +71,8 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)   | Memory (B/op)     | Allocations |
 | ------- | ------------ | ----------- | ----------------- | ----------- |
-| MOS-128 | 308,167      | **0.31 ms** | 63,709 (~62 KB)   | 99          |
-| MOS-256 | 953,193      | **0.95 ms** | 121,954 (~119 KB) | 120         |
+| MOS-128 | 320,506      | **0.32 ms** | 66,210 (~64 KB)   | 129         |
+| MOS-256 | 936,247      | **0.94 ms** | 121,951 (~119 KB) | 120         |
 
 **Analysis:**
 
@@ -83,8 +83,8 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)   | Memory (B/op)     | Allocations |
 | ------- | ------------ | ----------- | ----------------- | ----------- |
-| MOS-128 | 333,909      | **0.33 ms** | 97,862 (~96 KB)   | 129         |
-| MOS-256 | 1,011,805    | **1.01 ms** | 183,248 (~179 KB) | 150         |
+| MOS-128 | 407,390      | **0.41 ms** | 113,621 (~111 KB) | 192         |
+| MOS-256 | 987,145      | **0.99 ms** | 183,241 (~179 KB) | 150         |
 
 **Analysis:**
 
@@ -99,8 +99,8 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (ms)    | Memory (B/op)          | Allocations |
 | ------- | ------------ | ------------ | ---------------------- | ----------- |
-| MOS-128 | 6,113,639    | **6.11 ms**  | 3,703,573 (~3.53 MB)   | 315         |
-| MOS-256 | 22,311,797   | **22.31 ms** | 14,269,156 (~13.61 MB) | 421         |
+| MOS-128 | 6,217,396    | **6.22 ms**  | 3,703,625 (~3.53 MB)   | 317         |
+| MOS-256 | 22,494,461   | **22.49 ms** | 14,269,639 (~13.61 MB) | 423         |
 
 **Analysis:**
 
@@ -111,13 +111,20 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 
 | Level   | Time (ns/op) | Time (μs)    | Memory (B/op)     | Allocations |
 | ------- | ------------ | ------------ | ----------------- | ----------- |
-| MOS-128 | 11,657       | **11.66 μs** | 7,348 (~7.2 KB)   | 14          |
-| MOS-256 | 21,632       | **21.63 μs** | 23,739 (~23.2 KB) | 17          |
+| MOS-128 | 12,066       | **12.07 μs** | 7,348 (~7.2 KB)   | 14          |
+| MOS-256 | 21,945       | **21.95 μs** | 21,739 (~21.2 KB) | 17          |
+
+#### 2.3 Verify
+
+| Level   | Time (ns/op) | Time (ms)   | Memory (B/op)        | Allocations |
+| ------- | ------------ | ----------- | -------------------- | ----------- |
+| MOS-128 | 2,441,008    | **2.44 ms** | 1,695,938 (~1.62 MB) | 9           |
+| MOS-256 | 9,132,425    | **9.13 ms** | 6,684,872 (~6.38 MB) | 9           |
 
 **Analysis:**
 
 - Signing is **very fast** at both security levels
-- MOS-256 is only **1.86× slower** than MOS-128 (best ratio among all operations)
+- MOS-256 is only **1.82× slower** than MOS-128 (best ratio among all operations)
 - Very low memory footprint compared to other operations
 - Can sign **~85,800 messages/second** at MOS-128 level
 - Can sign **~46,200 messages/second** at MOS-256 level
@@ -132,7 +139,7 @@ This report presents a comprehensive performance analysis comparing kMOSAIC's tw
 **Analysis:**
 
 - Verification is approximately **200× slower** than signing at both security levels
-- MOS-256 verification is **3.86× slower** than MOS-128
+- MOS-256 verification is **3.74× slower** than MOS-128
 - Memory consumption is significant due to tensor operations during verification
 - Allocation count is minimal (9), indicating bulk memory operations
 
@@ -177,19 +184,19 @@ These benchmarks measure complete cryptographic workflows including key generati
 Operation            MOS-128         MOS-256         Ratio
 ─────────────────────────────────────────────────────────────
 KEM KeyGen      █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  6.04 ms
-                ████████████████████░░░░░░░░░░░░░░ 22.25 ms   3.68×
+                ████████████████████░░░░░░░░░░░░░░  22.43 ms   3.56×
 
-KEM Encap       █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.30 ms
-                ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.93 ms   3.07×
+KEM Encap       █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.32 ms
+                ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.95 ms   3.00×
 
-KEM Decap       █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.34 ms
-                ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.99 ms   2.94×
+KEM Decap       █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.38 ms
+                ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  1.06 ms   2.80×
 
 Sign            ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.01 ms
-                ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.02 ms   1.86×
+                ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.02 ms   1.82×
 
 Verify          ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  2.36 ms
-                █████████░░░░░░░░░░░░░░░░░░░░░░░░░  9.11 ms   3.86×
+                █████████░░░░░░░░░░░░░░░░░░░░░░░░░  9.13 ms   3.74×
 ```
 
 ### Memory Consumption Comparison
@@ -265,30 +272,30 @@ goarch: arm64
 pkg: github.com/BackendStack21/k-mosaic-go/test
 cpu: Apple M2 Pro
 
-BenchmarkKEM_GenerateKeyPair_MOS128-10    194    6,041,387 ns/op   3,703,413 B/op   314 allocs/op
-BenchmarkKEM_Encapsulate_MOS128-10       3832      304,337 ns/op      63,132 B/op    89 allocs/op
-BenchmarkKEM_Decapsulate_MOS128-10       3445      336,870 ns/op      97,561 B/op   122 allocs/op
-BenchmarkKEM_Encrypt_MOS128-10           3849      308,167 ns/op      63,709 B/op    99 allocs/op
-BenchmarkKEM_Decrypt_MOS128-10           3439      333,909 ns/op      97,862 B/op   129 allocs/op
+BenchmarkKEM_GenerateKeyPair_MOS128-10               183           6,294,439 ns/op         3,703,685 B/op        317 allocs/op
+BenchmarkKEM_Encapsulate_MOS128-10                  3772            316,474 ns/op           64,527 B/op        121 allocs/op
+BenchmarkKEM_Decapsulate_MOS128-10                  3138            376,690 ns/op          112,156 B/op        185 allocs/op
+BenchmarkKEM_Encrypt_MOS128-10                      3553            320,506 ns/op           66,210 B/op        129 allocs/op
+BenchmarkKEM_Decrypt_MOS128-10                      3057            407,390 ns/op          113,621 B/op        192 allocs/op
 
-BenchmarkKEM_GenerateKeyPair_MOS256-10     49   22,250,110 ns/op  14,269,288 B/op   422 allocs/op
-BenchmarkKEM_Encapsulate_MOS256-10       1294      934,400 ns/op     121,369 B/op   110 allocs/op
-BenchmarkKEM_Decapsulate_MOS256-10       1202      991,434 ns/op     182,938 B/op   143 allocs/op
-BenchmarkKEM_Encrypt_MOS256-10           1273      953,193 ns/op     121,954 B/op   120 allocs/op
-BenchmarkKEM_Decrypt_MOS256-10           1209    1,011,805 ns/op     183,248 B/op   150 allocs/op
+BenchmarkKEM_GenerateKeyPair_MOS256-10                50          22,426,476 ns/op        14,269,239 B/op        424 allocs/op
+BenchmarkKEM_Encapsulate_MOS256-10                  1263            948,806 ns/op          121,371 B/op        110 allocs/op
+BenchmarkKEM_Decapsulate_MOS256-10                  1131           1,055,179 ns/op          182,942 B/op        143 allocs/op
+BenchmarkKEM_Encrypt_MOS256-10                      1290            936,247 ns/op          121,951 B/op        120 allocs/op
+BenchmarkKEM_Decrypt_MOS256-10                      1195            987,145 ns/op          183,241 B/op        150 allocs/op
 
-BenchmarkSign_GenerateKeyPair_MOS128-10   195    6,113,639 ns/op   3,703,573 B/op   315 allocs/op
-BenchmarkSign_Sign_MOS128-10           102409       11,657 ns/op       7,348 B/op    14 allocs/op
-BenchmarkSign_Verify_MOS128-10            507    2,360,853 ns/op   1,695,942 B/op     9 allocs/op
+BenchmarkSign_GenerateKeyPair_MOS128-10              193           6,217,396 ns/op         3,703,625 B/op        317 allocs/op
+BenchmarkSign_Sign_MOS128-10                       98024             12,066 ns/op            7,348 B/op         14 allocs/op
+BenchmarkSign_Verify_MOS128-10                       494           2,441,008 ns/op         1,695,938 B/op          9 allocs/op
 
-BenchmarkSign_GenerateKeyPair_MOS256-10    49   22,311,797 ns/op  14,269,156 B/op   421 allocs/op
-BenchmarkSign_Sign_MOS256-10            55612       21,632 ns/op      23,739 B/op    17 allocs/op
-BenchmarkSign_Verify_MOS256-10            130    9,109,609 ns/op   6,684,872 B/op     9 allocs/op
+BenchmarkSign_GenerateKeyPair_MOS256-10               49          22,494,461 ns/op        14,269,639 B/op        423 allocs/op
+BenchmarkSign_Sign_MOS256-10                       53791             21,945 ns/op           21,739 B/op         17 allocs/op
+BenchmarkSign_Verify_MOS256-10                       130           9,132,425 ns/op         6,684,872 B/op          9 allocs/op
 
-BenchmarkKEM_FullRoundTrip_MOS128-10      174    6,957,989 ns/op   3,865,525 B/op   544 allocs/op
-BenchmarkKEM_FullRoundTrip_MOS256-10       45   24,377,706 ns/op  14,574,141 B/op   691 allocs/op
-BenchmarkSign_FullRoundTrip_MOS128-10     136    8,543,678 ns/op   5,408,387 B/op   341 allocs/op
-BenchmarkSign_FullRoundTrip_MOS256-10      36   32,230,172 ns/op  20,980,555 B/op   455 allocs/op
+BenchmarkKEM_FullRoundTrip_MOS128-10                 171           7,014,679 ns/op         3,883,791 B/op        639 allocs/op
+BenchmarkKEM_FullRoundTrip_MOS256-10                  44          24,670,982 ns/op        14,601,994 B/op        787 allocs/op
+BenchmarkSign_FullRoundTrip_MOS128-10                136           8,734,303 ns/op         5,408,413 B/op        344 allocs/op
+BenchmarkSign_FullRoundTrip_MOS256-10                 36          32,496,609 ns/op        20,981,376 B/op        460 allocs/op
 ```
 
 ---
