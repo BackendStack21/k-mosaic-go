@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "1.0.0"
+	version = "1.0.1"
 	appName = "k-mosaic-cli"
 )
 
