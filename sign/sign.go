@@ -4,6 +4,7 @@ package sign
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
@@ -16,16 +17,24 @@ import (
 )
 
 const (
-	DomainSLSS      = "kmosaic-sign-slss-v1"
-	DomainTDD       = "kmosaic-sign-tdd-v1"
-	DomainEGRW      = "kmosaic-sign-egrw-v1"
-	DomainChallenge = "kmosaic-sign-chal-v1"
-	DomainWitness   = "kmosaic-sign-wit-v1"
-	DomainResponse  = "kmosaic-sign-resp-v1"
+	DomainSLSS       = "kmosaic-sign-slss-v1"
+	DomainTDD        = "kmosaic-sign-tdd-v1"
+	DomainEGRW       = "kmosaic-sign-egrw-v1"
+	DomainChallenge  = "kmosaic-sign-chal-v1"
+	DomainWitness    = "kmosaic-sign-wit-v1"
+	DomainResponse   = "kmosaic-sign-resp-v1"
+	MaxComponentSize = 10 * 1024 * 1024 // 10MB max for any single component
 )
 
 // GenerateKeyPair generates a signature key pair.
-func GenerateKeyPair(level kmosaic.SecurityLevel) (*kmosaic.MOSAICSignKeyPair, error) {
+func GenerateKeyPair(level kmosaic.SecurityLevel) (result *kmosaic.MOSAICSignKeyPair, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("signature key generation panic: %v", r)
+		}
+	}()
+
 	params, err := core.GetParams(level)
 	if err != nil {
 		return nil, err
@@ -126,7 +135,14 @@ func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic
 }
 
 // Sign creates a signature for a message.
-func Sign(sk *kmosaic.MOSAICSignSecretKey, pk *kmosaic.MOSAICSignPublicKey, message []byte) (*kmosaic.MOSAICSignature, error) {
+func Sign(sk *kmosaic.MOSAICSignSecretKey, pk *kmosaic.MOSAICSignPublicKey, message []byte) (result *kmosaic.MOSAICSignature, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("signature creation panic: %v", r)
+		}
+	}()
+
 	// Generate random witness
 	witnessRand, err := utils.SecureRandomBytes(32)
 	if err != nil {
@@ -192,7 +208,13 @@ func computeResponse(sk *kmosaic.MOSAICSignSecretKey, challenge, witnessRand []b
 }
 
 // Verify checks if a signature is valid for a message.
-func Verify(pk *kmosaic.MOSAICSignPublicKey, message []byte, sig *kmosaic.MOSAICSignature) bool {
+func Verify(pk *kmosaic.MOSAICSignPublicKey, message []byte, sig *kmosaic.MOSAICSignature) (isValid bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			isValid = false
+		}
+	}()
+
 	// Check lengths
 	if len(sig.Commitment) != 32 || len(sig.Challenge) != 32 || len(sig.Response) != 64 {
 		return false
@@ -342,6 +364,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	// Read security level
 	levelLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if levelLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: security level size exceeds maximum")
+	}
 	if offset+levelLen > len(data) {
 		return nil, errors.New("invalid public key: security level truncated")
 	}
@@ -356,6 +381,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	// Read SLSS public key
 	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if slssLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: SLSS data size exceeds maximum")
+	}
 	if offset+slssLen > len(data) {
 		return nil, errors.New("invalid public key: SLSS data truncated")
 	}
@@ -369,6 +397,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	// Read TDD public key
 	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if tddLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: TDD data size exceeds maximum")
+	}
 	if offset+tddLen > len(data) {
 		return nil, errors.New("invalid public key: TDD data truncated")
 	}
@@ -382,6 +413,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	// Read EGRW public key
 	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if egrwLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: EGRW data size exceeds maximum")
+	}
 	if offset+egrwLen > len(data) {
 		return nil, errors.New("invalid public key: EGRW data truncated")
 	}

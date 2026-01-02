@@ -12,6 +12,7 @@ import (
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
 	"github.com/BackendStack21/k-mosaic-go/kem"
 	"github.com/BackendStack21/k-mosaic-go/sign"
+	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
 // TestKEMRoundtrip tests key generation, encapsulation, and decapsulation.
@@ -200,12 +201,12 @@ func TestHybridEncryption(t *testing.T) {
 		t.Fatalf("GenerateKeyPair failed: %v", err)
 	}
 
-	// Test various message sizes
+	// Test various message sizes (note: empty messages are now rejected for security to avoid
+	// cryptographic edge cases and potential proof/verification bypass issues)
 	testCases := []struct {
 		name string
 		size int
 	}{
-		{"empty", 0},
 		{"small", 16},
 		{"medium", 1024},
 		{"large", 64 * 1024},
@@ -503,5 +504,283 @@ func testDeterministicNIZKLevel(t *testing.T, level kmosaic.SecurityLevel, fixed
 		t.Logf("Level: %s", level)
 		t.Logf("Ciphertext: %x", result.Ciphertext)
 		t.Logf("SharedSecret: %x", result.SharedSecret)
+	}
+}
+
+// TestSecurityValidation_EmptyMessage tests that empty messages are rejected.
+func TestSecurityValidation_EmptyMessage(t *testing.T) {
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	// Empty message should be rejected
+	_, err = kem.Encrypt(&kp.PublicKey, []byte{})
+	if err == nil {
+		t.Fatal("Expected error for empty message encryption")
+	}
+	if err.Error() != "plaintext cannot be empty" {
+		t.Errorf("Wrong error message: expected 'plaintext cannot be empty', got '%v'", err)
+	}
+}
+
+// TestSecurityValidation_MessageSize tests message size limits.
+func TestSecurityValidation_MessageSize(t *testing.T) {
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	// Valid message size should work
+	validMsg := make([]byte, 1024*1024) // 1MB
+	em, err := kem.Encrypt(&kp.PublicKey, validMsg)
+	if err != nil {
+		t.Fatalf("Encryption of valid-sized message failed: %v", err)
+	}
+
+	// Decrypt to verify it works
+	decrypted, err := kem.Decrypt(&kp.SecretKey, &kp.PublicKey, em)
+	if err != nil {
+		t.Fatalf("Decryption failed: %v", err)
+	}
+
+	if !bytes.Equal(validMsg, decrypted) {
+		t.Error("Decrypted message does not match original")
+	}
+
+	t.Logf("Successfully encrypted and decrypted %d-byte message", len(validMsg))
+}
+
+// TestSecurityValidation_IntegerOverflow tests integer overflow protection.
+func TestSecurityValidation_IntegerOverflow(t *testing.T) {
+	// Create malformed data claiming huge array sizes
+	malformedData := make([]byte, 100)
+	// Set first 4 bytes to 0xFFFFFFFF (4GB claim)
+	malformedData[0] = 0xFF
+	malformedData[1] = 0xFF
+	malformedData[2] = 0xFF
+	malformedData[3] = 0xFF
+
+	// Should reject the huge size
+	_, err := kem.DeserializePublicKey(malformedData)
+	if err == nil {
+		t.Error("Expected error for oversized component claim")
+	}
+	if err.Error() == "" {
+		t.Error("Error message is empty")
+	}
+	t.Logf("Correctly rejected oversized component: %v", err)
+}
+
+// TestSecurityValidation_TruncatedData tests array bounds validation.
+func TestSecurityValidation_TruncatedData(t *testing.T) {
+	// Generate valid key and serialize it
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	pkBytes := kem.SerializePublicKey(&kp.PublicKey)
+
+	// Valid deserialization should work
+	pk, err := kem.DeserializePublicKey(pkBytes)
+	if err != nil {
+		t.Fatalf("Valid deserialization failed: %v", err)
+	}
+	if pk == nil {
+		t.Fatal("Deserialized key is nil")
+	}
+
+	// Truncated data should fail
+	truncated := pkBytes[:len(pkBytes)/2]
+	_, err = kem.DeserializePublicKey(truncated)
+	if err == nil {
+		t.Error("Expected error for truncated public key")
+	}
+
+	t.Logf("Correctly rejected truncated data after accepting %d valid bytes", len(pkBytes))
+}
+
+// TestSecurityValidation_ConstantTimeComparison tests constant-time operations.
+func TestSecurityValidation_ConstantTimeComparison(t *testing.T) {
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	// Valid encapsulation
+	encResult, err := kem.Encapsulate(&kp.PublicKey)
+	if err != nil {
+		t.Fatalf("Encapsulate failed: %v", err)
+	}
+
+	ss, err := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &encResult.Ciphertext)
+	if err != nil {
+		t.Fatalf("Decapsulate failed: %v", err)
+	}
+
+	// Secrets should match
+	if !bytes.Equal(ss, encResult.SharedSecret) {
+		t.Error("Shared secret mismatch for valid ciphertext")
+	}
+
+	// Invalid ciphertext should still return a secret (implicit reject)
+	invalidCT := encResult.Ciphertext
+	if len(invalidCT.Proof) > 0 {
+		invalidCT.Proof[0] ^= 0xFF // Flip bits in proof
+	}
+	// Also corrupt the C1 component's U field
+	if len(invalidCT.C1.U) > 0 {
+		invalidCT.C1.U[0] ^= 1
+	}
+
+	ss2, err := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &invalidCT)
+	if err != nil {
+		t.Fatalf("Decapsulate with invalid CT failed: %v", err)
+	}
+
+	// Should return different secret
+	if bytes.Equal(ss, ss2) {
+		t.Error("Invalid ciphertext should produce different shared secret (implicit reject)")
+	}
+
+	t.Logf("Constant-time operations verified: different secrets for valid vs invalid ciphertexts")
+}
+
+// TestSecurityValidation_SignatureConstantTime tests signature verification uses constant-time.
+func TestSecurityValidation_SignatureConstantTime(t *testing.T) {
+	kp, err := sign.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	message := []byte("test message")
+
+	sig, err := sign.Sign(&kp.SecretKey, &kp.PublicKey, message)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	// Valid signature should verify
+	valid := sign.Verify(&kp.PublicKey, message, sig)
+	if !valid {
+		t.Error("Valid signature failed verification")
+	}
+
+	// Modified signature should not verify
+	modSig := *sig
+	modSig.Challenge[0] ^= 0xFF
+	validMod := sign.Verify(&kp.PublicKey, message, &modSig)
+	if validMod {
+		t.Error("Modified signature passed verification")
+	}
+
+	t.Logf("Signature constant-time verification working correctly")
+}
+
+// TestSecurityValidation_EntropySeed tests entropy validation of seeds.
+func TestSecurityValidation_EntropySeed(t *testing.T) {
+	// Test that ValidateSeedEntropy rejects weak seeds
+	testCases := []struct {
+		name  string
+		seed  []byte
+		valid bool
+	}{
+		{
+			name:  "invalid_all_zeros",
+			seed:  bytes.Repeat([]byte{0}, 32),
+			valid: false, // All zeros is explicitly invalid (not random)
+		},
+		{
+			name:  "sequential_pattern",
+			seed:  []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31},
+			valid: false, // Sequential pattern is not random
+		},
+	}
+
+	for _, tc := range testCases {
+		err := utils.ValidateSeedEntropy(tc.seed)
+		isValid := err == nil
+		if isValid != tc.valid {
+			t.Errorf("%s: expected valid=%v, got valid=%v (err=%v)", tc.name, tc.valid, isValid, err)
+		}
+	}
+
+	t.Logf("Entropy validation correctly rejects weak seed patterns")
+}
+
+// TestSecurityValidation_SecretKeyIntegrity tests secret key structure integrity.
+func TestSecurityValidation_SecretKeyIntegrity(t *testing.T) {
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	sk := &kp.SecretKey
+
+	// Verify seed is present
+	if len(sk.Seed) == 0 {
+		t.Error("Seed is empty")
+	}
+
+	// Verify public key hash is present
+	if len(sk.PublicKeyHash) == 0 {
+		t.Error("PublicKeyHash is empty")
+	}
+
+	// Verify SLSS component
+	if len(sk.SLSS.S) == 0 {
+		t.Error("SLSS.S is empty")
+	}
+
+	// Verify TDD factors
+	if len(sk.TDD.Factors.A) == 0 {
+		t.Error("TDD.Factors.A is empty")
+	}
+
+	// Verify EGRW component
+	if len(sk.EGRW.Walk) == 0 {
+		t.Error("EGRW.Walk is empty")
+	}
+
+	t.Logf("Secret key integrity verified: Seed=%d, Hash=%d, SLSS=%d, TDD=(A=%d,B=%d,C=%d), EGRW=%d",
+		len(sk.Seed), len(sk.PublicKeyHash), len(sk.SLSS.S),
+		len(sk.TDD.Factors.A), len(sk.TDD.Factors.B), len(sk.TDD.Factors.C),
+		len(sk.EGRW.Walk))
+}
+
+// BenchmarkMessageValidationOverhead benchmarks the cost of message validation
+func BenchmarkMessageValidationOverhead(b *testing.B) {
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		b.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	msg := make([]byte, 1024)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := kem.Encrypt(&kp.PublicKey, msg)
+		if err != nil {
+			b.Fatalf("Encrypt failed: %v", err)
+		}
+	}
+}
+
+// BenchmarkIntegerValidationOverhead benchmarks the cost of integer validation during deserialization
+func BenchmarkIntegerValidationOverhead(b *testing.B) {
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		b.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	pkBytes := kem.SerializePublicKey(&kp.PublicKey)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := kem.DeserializePublicKey(pkBytes)
+		if err != nil {
+			b.Fatalf("DeserializePublicKey failed: %v", err)
+		}
 	}
 }

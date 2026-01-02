@@ -314,6 +314,10 @@ func implicitReject(sk *kmosaic.MOSAICSecretKey, ct *kmosaic.MOSAICCiphertext) [
 
 // Encrypt encrypts a message using KEM+DEM.
 func Encrypt(pk *kmosaic.MOSAICPublicKey, plaintext []byte) (*kmosaic.EncryptedMessage, error) {
+	if len(plaintext) == 0 {
+		return nil, errors.New("plaintext cannot be empty")
+	}
+
 	result, err := Encapsulate(pk)
 	if err != nil {
 		return nil, err
