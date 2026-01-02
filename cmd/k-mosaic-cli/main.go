@@ -1856,13 +1856,12 @@ func writeOutput(data []byte, filename string) {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
 		}
+		defer f.Close()
 
 		if _, err := f.Write(data); err != nil {
-			f.Close()
 			fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)
 			os.Exit(1)
 		}
-		f.Close()
 
 		// Ensure permissions are enforced even if umask is permissive
 		if err := os.Chmod(filename, 0600); err != nil {
