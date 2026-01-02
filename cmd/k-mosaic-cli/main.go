@@ -160,13 +160,18 @@ For more information, visit: https://github.com/BackendStack21/k-mosaic-go
 
 // SafeAdd performs addition with overflow detection.
 func SafeAdd(a, b int) (int, error) {
-	if b > 0 && a > math.MaxInt-b {
-		return 0, fmt.Errorf("integer overflow: %d + %d exceeds max int", a, b)
-	}
-	if b < 0 && a < math.MinInt-b {
+	// Detect overflow/underflow using result comparison.
+	// When adding positive b, result should be > a.
+	// When adding negative b, result should be < a.
+	// If this relationship breaks, overflow/underflow has occurred.
+	result := a + b
+	if (b > 0 && result < a) || (b < 0 && result > a) {
+		if b > 0 {
+			return 0, fmt.Errorf("integer overflow: %d + %d exceeds max int", a, b)
+		}
 		return 0, fmt.Errorf("integer underflow: %d + %d exceeds min int", a, b)
 	}
-	return a + b, nil
+	return result, nil
 }
 
 // ============================================================================
