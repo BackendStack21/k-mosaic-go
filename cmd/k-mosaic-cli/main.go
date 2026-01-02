@@ -3,13 +3,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -52,6 +55,7 @@ type KEMKeyPairExport struct {
 	PublicKey     string `json:"public_key"`
 	SecretKey     string `json:"secret_key"`
 	CreatedAt     string `json:"created_at"`
+	KeyHMAC       string `json:"key_hmac,omitempty"` // HMAC for integrity verification
 }
 
 // SignKeyPairExport represents an exported signature key pair
@@ -60,6 +64,7 @@ type SignKeyPairExport struct {
 	PublicKey     string `json:"public_key"`
 	SecretKey     string `json:"secret_key"`
 	CreatedAt     string `json:"created_at"`
+	KeyHMAC       string `json:"key_hmac,omitempty"` // HMAC for integrity verification
 }
 
 // EncapsulationExport represents an exported encapsulation result
@@ -153,6 +158,17 @@ For more information, visit: https://github.com/BackendStack21/k-mosaic-go
 `, appName, appName, appName, appName, appName, appName, appName, appName, appName, appName, appName, appName)
 }
 
+// SafeAdd performs addition with overflow detection.
+func SafeAdd(a, b int) (int, error) {
+	if b > 0 && a > math.MaxInt-b {
+		return 0, fmt.Errorf("integer overflow: %d + %d exceeds max int", a, b)
+	}
+	if b < 0 && a < math.MinInt-b {
+		return 0, fmt.Errorf("integer underflow: %d + %d exceeds min int", a, b)
+	}
+	return a + b, nil
+}
+
 // ============================================================================
 // KEM Commands
 // ============================================================================
@@ -221,6 +237,16 @@ EXAMPLES:
 `, appName, appName, appName, appName, appName, appName, appName, appName)
 }
 
+// generateKeyHMAC computes HMAC-SHA256 of key material for integrity verification
+// Uses public key as HMAC key to create an integrity signature
+func generateKeyHMAC(publicKey string, secretKey string) (string, error) {
+	// Use public key as HMAC key (it's already protected, can't be secret)
+	h := hmac.New(sha256.New, []byte(publicKey))
+	h.Write([]byte(secretKey))
+	hmacResult := h.Sum(nil)
+	return base64.StdEncoding.EncodeToString(hmacResult), nil
+}
+
 func kemKeygen(args []string) {
 	config := parseConfig(args)
 
@@ -252,6 +278,11 @@ func kemKeygen(args []string) {
 		PublicKey:     encodeBytes(pkBytes, config.OutputFormat),
 		SecretKey:     base64.StdEncoding.EncodeToString([]byte(skJSON)),
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	keyHMAC, err := generateKeyHMAC(export.PublicKey, export.SecretKey)
+	if err == nil {
+		export.KeyHMAC = keyHMAC
 	}
 
 	output, err := json.MarshalIndent(export, "", "  ")
@@ -420,43 +451,79 @@ func kemPKInspect(args []string) {
 		os.Exit(1)
 	}
 	levelLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	off += 4 + levelLen
+	var newOff int
+	newOff, err = SafeAdd(off, 4+levelLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+4 > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: truncated\n")
 		os.Exit(1)
 	}
 	slssLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	off += 4
+	newOff, err = SafeAdd(off, 4)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+slssLen > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: SLSS truncated\n")
 		os.Exit(1)
 	}
 	slssBytes := pkData[off : off+slssLen]
-	off += slssLen
+	newOff, err = SafeAdd(off, slssLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+4 > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: truncated after SLSS\n")
 		os.Exit(1)
 	}
 	tddLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	off += 4
+	newOff, err = SafeAdd(off, 4)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+tddLen > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: TDD truncated\n")
 		os.Exit(1)
 	}
 	tddBytes := pkData[off : off+tddLen]
-	off += tddLen
+	newOff, err = SafeAdd(off, tddLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+4 > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: truncated after TDD\n")
 		os.Exit(1)
 	}
 	egrwLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	off += 4
+	newOff, err = SafeAdd(off, 4)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+egrwLen > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: EGRW truncated\n")
 		os.Exit(1)
 	}
 	egrwBytes := pkData[off : off+egrwLen]
-	off += egrwLen
+	newOff, err = SafeAdd(off, egrwLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+		os.Exit(1)
+	}
+	off = newOff
 	if off+32 > len(pkData) {
 		fmt.Fprintf(os.Stderr, "Invalid public key: binding truncated\n")
 		os.Exit(1)
@@ -870,6 +937,11 @@ func signKeygen(args []string) {
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 
+	keyHMAC, err := generateKeyHMAC(export.PublicKey, export.SecretKey)
+	if err == nil {
+		export.KeyHMAC = keyHMAC
+	}
+
 	output, err := json.MarshalIndent(export, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error marshaling output: %v\n", err)
@@ -1243,6 +1315,12 @@ func parseConfig(args []string) CLIConfig {
 		config.SecurityLevel = kmosaic.MOS_128
 	case "256", "MOS-256", "MOS_256":
 		config.SecurityLevel = kmosaic.MOS_256
+	case "":
+		// No level specified, use default
+	default:
+		// Invalid level provided
+		fmt.Fprintf(os.Stderr, "Error: invalid security level '%s'. Must be one of: 128, 256\n", level)
+		os.Exit(1)
 	}
 
 	format := getArg(args, "--format", "-f")
@@ -1253,6 +1331,11 @@ func parseConfig(args []string) CLIConfig {
 		config.OutputFormat = FormatBase64
 	case "json":
 		config.OutputFormat = FormatJSON
+	case "":
+		// No format specified, use default
+	default:
+		fmt.Fprintf(os.Stderr, "Error: invalid format '%s'. Must be one of: hex, base64, json\n", format)
+		os.Exit(1)
 	}
 
 	config.OutputFile = getArg(args, "--output", "-o")
@@ -1338,7 +1421,15 @@ func signSecretKeyToJSON(sk *kmosaic.MOSAICSignSecretKey) (string, error) {
 }
 
 // secretKeyFromJSON converts JSON format secret key to MOSAICSecretKey
+// With proper type checking and bounds validation to prevent panics
 func secretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSecretKey, error) {
+	const (
+		MaxArraySize     = 10000000          // 10M elements max
+		MaxMatrixRows    = 100000            // 100k rows max
+		MaxMatrixCols    = 100000            // 100k cols max
+		MaxByteArraySize = 100 * 1024 * 1024 // 100MB max
+	)
+
 	var skJSON map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &skJSON); err != nil {
 		return nil, fmt.Errorf("failed to parse secret key JSON: %w", err)
@@ -1346,109 +1437,210 @@ func secretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSecretKey, error) {
 
 	sk := &kmosaic.MOSAICSecretKey{}
 
-	// Parse SLSS
+	// Parse SLSS with type and bounds checking
 	if slss, ok := skJSON["slss"].(map[string]interface{}); ok {
 		if sArray, ok := slss["s"].([]interface{}); ok {
+			if len(sArray) > MaxArraySize {
+				return nil, fmt.Errorf("SLSS.s array too large: %d > %d", len(sArray), MaxArraySize)
+			}
 			sk.SLSS.S = make([]int8, len(sArray))
 			for i, v := range sArray {
-				if num, ok := v.(float64); ok {
-					sk.SLSS.S[i] = int8(num)
+				num, ok := v.(float64)
+				if !ok {
+					return nil, fmt.Errorf("SLSS.s[%d] is not a number", i)
 				}
+				if num < math.MinInt8 || num > math.MaxInt8 {
+					return nil, fmt.Errorf("SLSS.s[%d] = %v out of int8 range", i, num)
+				}
+				sk.SLSS.S[i] = int8(num)
 			}
+		} else if _, exists := slss["s"]; exists {
+			return nil, fmt.Errorf("SLSS.s must be an array")
 		}
 	}
 
-	// Parse TDD
+	// Parse TDD with type and bounds checking
 	if tdd, ok := skJSON["tdd"].(map[string]interface{}); ok {
 		if factors, ok := tdd["factors"].(map[string]interface{}); ok {
 			// Parse factor a
 			if aArray, ok := factors["a"].([]interface{}); ok {
+				if len(aArray) > MaxMatrixRows {
+					return nil, fmt.Errorf("TDD.Factors.A too many rows: %d > %d", len(aArray), MaxMatrixRows)
+				}
 				sk.TDD.Factors.A = make([][]int32, len(aArray))
 				for i, v := range aArray {
-					if vec, ok := v.([]interface{}); ok {
-						sk.TDD.Factors.A[i] = make([]int32, len(vec))
-						for j, val := range vec {
-							if num, ok := val.(float64); ok {
-								sk.TDD.Factors.A[i][j] = int32(num)
-							}
+					vec, ok := v.([]interface{})
+					if !ok {
+						return nil, fmt.Errorf("TDD.Factors.A[%d] is not an array", i)
+					}
+					if len(vec) > MaxMatrixCols {
+						return nil, fmt.Errorf("TDD.Factors.A[%d] too many columns: %d > %d", i, len(vec), MaxMatrixCols)
+					}
+					sk.TDD.Factors.A[i] = make([]int32, len(vec))
+					for j, val := range vec {
+						num, ok := val.(float64)
+						if !ok {
+							return nil, fmt.Errorf("TDD.Factors.A[%d][%d] is not a number", i, j)
 						}
+						if num < math.MinInt32 || num > math.MaxInt32 {
+							return nil, fmt.Errorf("TDD.Factors.A[%d][%d] = %v out of int32 range", i, j, num)
+						}
+						sk.TDD.Factors.A[i][j] = int32(num)
 					}
 				}
+			} else if _, exists := factors["a"]; exists {
+				return nil, fmt.Errorf("TDD.Factors.a must be an array")
 			}
+
 			// Parse factor b
 			if bArray, ok := factors["b"].([]interface{}); ok {
+				if len(bArray) > MaxMatrixRows {
+					return nil, fmt.Errorf("TDD.Factors.B too many rows: %d > %d", len(bArray), MaxMatrixRows)
+				}
 				sk.TDD.Factors.B = make([][]int32, len(bArray))
 				for i, v := range bArray {
-					if vec, ok := v.([]interface{}); ok {
-						sk.TDD.Factors.B[i] = make([]int32, len(vec))
-						for j, val := range vec {
-							if num, ok := val.(float64); ok {
-								sk.TDD.Factors.B[i][j] = int32(num)
-							}
+					vec, ok := v.([]interface{})
+					if !ok {
+						return nil, fmt.Errorf("TDD.Factors.B[%d] is not an array", i)
+					}
+					if len(vec) > MaxMatrixCols {
+						return nil, fmt.Errorf("TDD.Factors.B[%d] too many columns: %d > %d", i, len(vec), MaxMatrixCols)
+					}
+					sk.TDD.Factors.B[i] = make([]int32, len(vec))
+					for j, val := range vec {
+						num, ok := val.(float64)
+						if !ok {
+							return nil, fmt.Errorf("TDD.Factors.B[%d][%d] is not a number", i, j)
 						}
+						if num < math.MinInt32 || num > math.MaxInt32 {
+							return nil, fmt.Errorf("TDD.Factors.B[%d][%d] = %v out of int32 range", i, j, num)
+						}
+						sk.TDD.Factors.B[i][j] = int32(num)
 					}
 				}
+			} else if _, exists := factors["b"]; exists {
+				return nil, fmt.Errorf("TDD.Factors.b must be an array")
 			}
+
 			// Parse factor c
 			if cArray, ok := factors["c"].([]interface{}); ok {
+				if len(cArray) > MaxMatrixRows {
+					return nil, fmt.Errorf("TDD.Factors.C too many rows: %d > %d", len(cArray), MaxMatrixRows)
+				}
 				sk.TDD.Factors.C = make([][]int32, len(cArray))
 				for i, v := range cArray {
-					if vec, ok := v.([]interface{}); ok {
-						sk.TDD.Factors.C[i] = make([]int32, len(vec))
-						for j, val := range vec {
-							if num, ok := val.(float64); ok {
-								sk.TDD.Factors.C[i][j] = int32(num)
-							}
+					vec, ok := v.([]interface{})
+					if !ok {
+						return nil, fmt.Errorf("TDD.Factors.C[%d] is not an array", i)
+					}
+					if len(vec) > MaxMatrixCols {
+						return nil, fmt.Errorf("TDD.Factors.C[%d] too many columns: %d > %d", i, len(vec), MaxMatrixCols)
+					}
+					sk.TDD.Factors.C[i] = make([]int32, len(vec))
+					for j, val := range vec {
+						num, ok := val.(float64)
+						if !ok {
+							return nil, fmt.Errorf("TDD.Factors.C[%d][%d] is not a number", i, j)
 						}
+						if num < math.MinInt32 || num > math.MaxInt32 {
+							return nil, fmt.Errorf("TDD.Factors.C[%d][%d] = %v out of int32 range", i, j, num)
+						}
+						sk.TDD.Factors.C[i][j] = int32(num)
 					}
 				}
+			} else if _, exists := factors["c"]; exists {
+				return nil, fmt.Errorf("TDD.Factors.c must be an array")
 			}
+		} else if _, exists := tdd["factors"]; exists {
+			return nil, fmt.Errorf("TDD.factors must be a map")
 		}
 	}
 
-	// Parse EGRW
+	// Parse EGRW with type and bounds checking
 	if egrw, ok := skJSON["egrw"].(map[string]interface{}); ok {
 		if walkArray, ok := egrw["walk"].([]interface{}); ok {
+			if len(walkArray) > MaxArraySize {
+				return nil, fmt.Errorf("EGRW.walk array too large: %d > %d", len(walkArray), MaxArraySize)
+			}
 			sk.EGRW.Walk = make([]int, len(walkArray))
 			for i, v := range walkArray {
-				if num, ok := v.(float64); ok {
-					sk.EGRW.Walk[i] = int(num)
+				num, ok := v.(float64)
+				if !ok {
+					return nil, fmt.Errorf("EGRW.walk[%d] is not a number", i)
 				}
+				if num < 0 || num > math.MaxInt32 {
+					return nil, fmt.Errorf("EGRW.walk[%d] = %v out of valid range", i, num)
+				}
+				sk.EGRW.Walk[i] = int(num)
 			}
+		} else if _, exists := egrw["walk"]; exists {
+			return nil, fmt.Errorf("EGRW.walk must be an array")
 		}
 	}
 
-	// Parse seed (supports both base64 string and number array)
-	if seedStr, ok := skJSON["seed"].(string); ok {
-		// Base64 encoded string (from json.Marshal on []byte)
-		decoded, err := base64.StdEncoding.DecodeString(seedStr)
-		if err == nil {
+	// Parse seed with type and bounds checking
+	if seedVal, ok := skJSON["seed"]; ok {
+		if seedStr, ok := seedVal.(string); ok {
+			// Base64 encoded string
+			decoded, err := base64.StdEncoding.DecodeString(seedStr)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode seed: %w", err)
+			}
+			if len(decoded) > MaxByteArraySize {
+				return nil, fmt.Errorf("seed too large: %d > %d", len(decoded), MaxByteArraySize)
+			}
 			sk.Seed = decoded
-		}
-	} else if seedArray, ok := skJSON["seed"].([]interface{}); ok {
-		// Array of numbers
-		sk.Seed = make([]byte, len(seedArray))
-		for i, v := range seedArray {
-			if num, ok := v.(float64); ok {
+		} else if seedArray, ok := seedVal.([]interface{}); ok {
+			// Array of numbers
+			if len(seedArray) > MaxByteArraySize {
+				return nil, fmt.Errorf("seed array too large: %d > %d", len(seedArray), MaxByteArraySize)
+			}
+			sk.Seed = make([]byte, len(seedArray))
+			for i, v := range seedArray {
+				num, ok := v.(float64)
+				if !ok {
+					return nil, fmt.Errorf("seed[%d] is not a number", i)
+				}
+				if num < 0 || num > 255 {
+					return nil, fmt.Errorf("seed[%d] = %v out of byte range", i, num)
+				}
 				sk.Seed[i] = byte(num)
 			}
+		} else {
+			return nil, fmt.Errorf("seed must be a string or array")
 		}
 	}
 
-	// Parse publicKeyHash (supports both base64 string and number array)
-	if hashStr, ok := skJSON["publicKeyHash"].(string); ok {
-		// Base64 encoded string (from json.Marshal on []byte)
-		decoded, err := base64.StdEncoding.DecodeString(hashStr)
-		if err == nil {
+	// Parse publicKeyHash with type and bounds checking
+	if hashVal, ok := skJSON["publicKeyHash"]; ok {
+		if hashStr, ok := hashVal.(string); ok {
+			// Base64 encoded string
+			decoded, err := base64.StdEncoding.DecodeString(hashStr)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode publicKeyHash: %w", err)
+			}
+			if len(decoded) > MaxByteArraySize {
+				return nil, fmt.Errorf("publicKeyHash too large: %d > %d", len(decoded), MaxByteArraySize)
+			}
 			sk.PublicKeyHash = decoded
-		}
-	} else if hashArray, ok := skJSON["publicKeyHash"].([]interface{}); ok {
-		// Array of numbers
-		sk.PublicKeyHash = make([]byte, len(hashArray))
-		for i, v := range hashArray {
-			if num, ok := v.(float64); ok {
+		} else if hashArray, ok := hashVal.([]interface{}); ok {
+			// Array of numbers
+			if len(hashArray) > MaxByteArraySize {
+				return nil, fmt.Errorf("publicKeyHash array too large: %d > %d", len(hashArray), MaxByteArraySize)
+			}
+			sk.PublicKeyHash = make([]byte, len(hashArray))
+			for i, v := range hashArray {
+				num, ok := v.(float64)
+				if !ok {
+					return nil, fmt.Errorf("publicKeyHash[%d] is not a number", i)
+				}
+				if num < 0 || num > 255 {
+					return nil, fmt.Errorf("publicKeyHash[%d] = %v out of byte range", i, num)
+				}
 				sk.PublicKeyHash[i] = byte(num)
 			}
+		} else {
+			return nil, fmt.Errorf("publicKeyHash must be a string or array")
 		}
 	}
 
@@ -1499,7 +1691,19 @@ func decodeString(s string) ([]byte, error) {
 }
 
 // loadSecretKeyFromFile loads a secret key from a file, handling both JSON and binary formats
+// With file size validation to prevent unbounded file operations
 func loadSecretKeyFromFile(filename string) (*kmosaic.MOSAICSecretKey, error) {
+	const MaxInputFileSize = 100 * 1024 * 1024 // 100 MB limit
+
+	// Check file size before reading
+	info, err := os.Stat(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > MaxInputFileSize {
+		return nil, fmt.Errorf("input file too large: %d > %d bytes", info.Size(), MaxInputFileSize)
+	}
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -1531,7 +1735,19 @@ func loadSecretKeyFromFile(filename string) (*kmosaic.MOSAICSecretKey, error) {
 }
 
 // loadSignSecretKeyFromFile loads a signature secret key from a file
+// With file size validation to prevent unbounded file operations
 func loadSignSecretKeyFromFile(filename string) (*kmosaic.MOSAICSignSecretKey, error) {
+	const MaxInputFileSize = 100 * 1024 * 1024 // 100 MB limit
+
+	// Check file size before reading
+	info, err := os.Stat(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > MaxInputFileSize {
+		return nil, fmt.Errorf("input file too large: %d > %d bytes", info.Size(), MaxInputFileSize)
+	}
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -1563,6 +1779,17 @@ func loadSignSecretKeyFromFile(filename string) (*kmosaic.MOSAICSignSecretKey, e
 }
 
 func loadKeyFromFile(filename, keyField string) ([]byte, error) {
+	const MaxInputFileSize = 100 * 1024 * 1024 // 100 MB limit
+
+	// Check file size before reading
+	info, err := os.Stat(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > MaxInputFileSize {
+		return nil, fmt.Errorf("input file too large: %d > %d bytes", info.Size(), MaxInputFileSize)
+	}
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -1614,8 +1841,23 @@ func loadKeyFromFile(filename, keyField string) ([]byte, error) {
 
 func writeOutput(data []byte, filename string) {
 	if filename != "" {
-		if err := os.WriteFile(filename, data, 0600); err != nil {
+		// Create file with restrictive permissions (0400 read-only)
+		f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0400)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
+			os.Exit(1)
+		}
+
+		if _, err := f.Write(data); err != nil {
+			f.Close()
 			fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)
+			os.Exit(1)
+		}
+		f.Close()
+
+		// Ensure permissions are enforced even if umask is permissive
+		if err := os.Chmod(filename, 0400); err != nil {
+			fmt.Fprintf(os.Stderr, "Error setting file permissions: %v\n", err)
 			os.Exit(1)
 		}
 	} else {

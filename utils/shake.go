@@ -6,6 +6,12 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+const (
+	// MaxHashConcatInputSize prevents integer overflow and collision attacks in HashConcat.
+	// Each input must be <= 100MB. This provides safe encoding while remaining reasonable.
+	MaxHashConcatInputSize = 100 * 1024 * 1024
+)
+
 var shake256Pool = sync.Pool{
 	New: func() interface{} {
 		return sha3.NewShake256()
@@ -66,10 +72,16 @@ func HashWithDomain(domain string, data []byte) []byte {
 
 // HashConcat computes the SHA3-256 hash of the concatenation of multiple byte slices.
 // Each slice is prefixed with its length (4 bytes, little-endian) to ensure unique encoding.
+// SECURITY: Validates input sizes to prevent integer overflow and hash collisions.
 func HashConcat(inputs ...[]byte) []byte {
 	h := sha3.New256()
 	lenBytes := make([]byte, 4)
 	for _, input := range inputs {
+		// Validate input size to prevent DoS and overflow
+		if len(input) > MaxHashConcatInputSize {
+			panic("HashConcat: input size exceeds maximum")
+		}
+
 		l := len(input)
 		lenBytes[0] = byte(l)
 		lenBytes[1] = byte(l >> 8)
