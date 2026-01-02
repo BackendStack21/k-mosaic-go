@@ -1494,7 +1494,7 @@ func secretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSecretKey, error) {
 					}
 				}
 			} else if _, exists := factors["a"]; exists {
-				return nil, fmt.Errorf("TDD.Factors.a must be an array")
+				return nil, fmt.Errorf("TDD.Factors.A must be an array")
 			}
 
 			// Parse factor b
@@ -1524,7 +1524,7 @@ func secretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSecretKey, error) {
 					}
 				}
 			} else if _, exists := factors["b"]; exists {
-				return nil, fmt.Errorf("TDD.Factors.b must be an array")
+				return nil, fmt.Errorf("TDD.Factors.B must be an array")
 			}
 
 			// Parse factor c
@@ -1554,7 +1554,7 @@ func secretKeyFromJSON(jsonStr string) (*kmosaic.MOSAICSecretKey, error) {
 					}
 				}
 			} else if _, exists := factors["c"]; exists {
-				return nil, fmt.Errorf("TDD.Factors.c must be an array")
+				return nil, fmt.Errorf("TDD.Factors.C must be an array")
 			}
 		} else if _, exists := tdd["factors"]; exists {
 			return nil, fmt.Errorf("TDD.factors must be a map")
