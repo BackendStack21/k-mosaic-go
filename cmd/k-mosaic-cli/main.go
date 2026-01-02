@@ -1848,8 +1848,10 @@ func loadKeyFromFile(filename, keyField string) ([]byte, error) {
 
 func writeOutput(data []byte, filename string) {
 	if filename != "" {
-		// Create file with restrictive permissions (0400 read-only)
-		f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0400)
+		// Create file with restrictive permissions (0600 read-write for owner only).
+		// This follows the standard practice for sensitive key material: secure against
+		// other users/processes while remaining usable by the owner.
+		f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating output file: %v\n", err)
 			os.Exit(1)
@@ -1863,7 +1865,7 @@ func writeOutput(data []byte, filename string) {
 		f.Close()
 
 		// Ensure permissions are enforced even if umask is permissive
-		if err := os.Chmod(filename, 0400); err != nil {
+		if err := os.Chmod(filename, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "Error setting file permissions: %v\n", err)
 			os.Exit(1)
 		}
