@@ -242,10 +242,12 @@ EXAMPLES:
 `, appName, appName, appName, appName, appName, appName, appName, appName)
 }
 
-// generateKeyHMAC computes HMAC-SHA256 of key material for integrity verification
-// Uses public key as HMAC key to create an integrity signature
+// generateKeyHMAC computes HMAC-SHA256 of key material for basic integrity verification.
+// WARNING: This only detects accidental corruption, NOT malicious tampering. The HMAC uses
+// the public key as the key material, which is not secret, so an attacker can easily forge
+// valid HMACs. For security-critical applications, use cryptographic signatures instead.
 func generateKeyHMAC(publicKey string, secretKey string) (string, error) {
-	// Use public key as HMAC key (it's already protected, can't be secret)
+	// Use public key for HMAC computation (provides only accidental corruption detection)
 	h := hmac.New(sha256.New, []byte(publicKey))
 	h.Write([]byte(secretKey))
 	hmacResult := h.Sum(nil)
