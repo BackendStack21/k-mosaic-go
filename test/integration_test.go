@@ -687,9 +687,9 @@ func TestSecurityValidation_EntropySeed(t *testing.T) {
 		valid bool
 	}{
 		{
-			name:  "valid_random_seed",
+			name:  "invalid_all_zeros",
 			seed:  bytes.Repeat([]byte{0}, 32),
-			valid: false, // All zeros is not random
+			valid: false, // All zeros is explicitly invalid (not random)
 		},
 		{
 			name:  "sequential_pattern",
