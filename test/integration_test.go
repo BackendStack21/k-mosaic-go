@@ -201,7 +201,8 @@ func TestHybridEncryption(t *testing.T) {
 		t.Fatalf("GenerateKeyPair failed: %v", err)
 	}
 
-	// Test various message sizes (note: empty messages are now rejected for security)
+	// Test various message sizes (note: empty messages are now rejected for security to avoid
+	// cryptographic edge cases and potential proof/verification bypass issues)
 	testCases := []struct {
 		name string
 		size int
