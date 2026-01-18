@@ -96,20 +96,22 @@ func ValidateParams(params kmosaic.MOSAICParams) error {
 	return nil
 }
 
-// isPrime checks if a number is prime using a simple trial division.
+// isPrime checks if a number is prime using optimized trial division.
+// Uses the 6k±1 optimization since all primes > 3 are of the form 6k±1.
 // This is used for validating parameters, not for generating large primes.
 func isPrime(n int) bool {
 	if n < 2 {
 		return false
 	}
-	if n == 2 {
+	if n == 2 || n == 3 {
 		return true
 	}
-	if n%2 == 0 {
+	if n%2 == 0 || n%3 == 0 {
 		return false
 	}
-	for i := 3; i*i <= n; i += 2 {
-		if n%i == 0 {
+	// Check divisibility by numbers of the form 6k±1
+	for i := 5; i*i <= n; i += 6 {
+		if n%i == 0 || n%(i+2) == 0 {
 			return false
 		}
 	}
