@@ -373,10 +373,10 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 // SECURITY WARNING: This struct contains only structural debug information.
 // Sensitive ephemeral values (error vectors, randomness) are intentionally excluded.
 type SlssDebugInfo struct {
-	ULen int    `json:"u_len"`
-	VLen int    `json:"v_len"`
-	W    int    `json:"w"`
-	RNNz int    `json:"r_nnz"` // Number of non-zero entries in r (not positions/values)
+	ULen int `json:"u_len"`
+	VLen int `json:"v_len"`
+	W    int `json:"w"`
+	RNNz int `json:"r_nnz"` // Number of non-zero entries in r (not positions/values)
 }
 
 // DebugEncrypt performs SLSS encryption and returns structural debug information.
