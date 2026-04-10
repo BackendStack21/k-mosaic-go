@@ -1,4 +1,19 @@
 // Package egrw implements the Expander Graph Random Walk problem for kMOSAIC.
+//
+// SECURITY NOTE – Design limitation: The Decrypt function does not incorporate the
+// secret walk (sk.Walk). The shared keystream is derived solely from public-key
+// components and the ciphertext vertex, meaning any holder of the public key can
+// recover the EGRW ciphertext share without the private key. This is a fundamental
+// design constraint of the current EGRW encryption scheme, rooted in the
+// non-commutativity of SL(2, Z_p) which prevents a simple Diffie-Hellman exchange.
+//
+// Practical impact: the overall kMOSAIC KEM's confidentiality therefore rests on
+// SLSS and TDD alone. An adversary must still break both SLSS and TDD to recover
+// the full encapsulated secret, providing a two-component security barrier rather
+// than the intended three-component barrier.
+//
+// Future work: redesign the EGRW component to contribute genuine confidentiality,
+// for example via a hash-based commitment authenticated with the walk.
 package egrw
 
 import (

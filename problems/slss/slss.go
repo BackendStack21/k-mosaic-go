@@ -370,16 +370,20 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 }
 
 // DebugInfo for SLSS encryption internals
+// SECURITY WARNING: This struct contains only structural debug information.
+// Sensitive ephemeral values (error vectors, randomness) are intentionally excluded.
 type SlssDebugInfo struct {
-	RIndices []int   `json:"r_indices"`
-	RValues  []int8  `json:"r_values"`
-	E1Head   []int32 `json:"e1_head"`
-	E2Head   []int32 `json:"e2_head"`
-	UHead    []int32 `json:"u_head"`
-	VHead    []int32 `json:"v_head"`
+	ULen int `json:"u_len"`
+	VLen int `json:"v_len"`
+	W    int `json:"w"`
+	RNNz int `json:"r_nnz"` // Number of non-zero entries in r (not positions/values)
 }
 
-// DebugEncrypt performs SLSS encryption but also returns internal debug information
+// DebugEncrypt performs SLSS encryption and returns structural debug information.
+//
+// SECURITY WARNING: Do not use in production. The returned SlssDebugInfo intentionally
+// omits sensitive ephemeral values (error vectors, randomness positions). Use Encrypt
+// for all production workloads.
 func DebugEncrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams, randomness []byte) (*kmosaic.SLSSCiphertext, *SlssDebugInfo, error) {
 	if len(randomness) < 32 {
 		return nil, nil, errors.New("randomness must be at least 32 bytes")
@@ -417,34 +421,29 @@ func DebugEncrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSP
 		v[i] = mod(val, q)
 	}
 
-	// Collect debug info (small heads)
-	debug := &SlssDebugInfo{}
-	// Record non-zero indices and values for r (first up to 16)
-	for i := 0; i < len(r) && len(debug.RIndices) < 16; i++ {
-		if r[i] != 0 {
-			debug.RIndices = append(debug.RIndices, i)
-			debug.RValues = append(debug.RValues, r[i])
+	// Count non-zero entries in r (structural info only, no positions or values)
+	rNNz := 0
+	for _, val := range r {
+		if val != 0 {
+			rNNz++
 		}
 	}
-	// Heads of error and ciphertext components
-	k := func(arr []int32, n int) []int32 {
-		if len(arr) < n {
-			n = len(arr)
-		}
-		out := make([]int32, n)
-		copy(out, arr[:n])
-		return out
+
+	// Only record structural (non-sensitive) information.
+	debug := &SlssDebugInfo{
+		ULen: len(u),
+		VLen: len(v),
+		W:    params.W,
+		RNNz: rNNz,
 	}
-	debug.E1Head = k(e1, 8)
-	debug.E2Head = k(e2, 8)
-	debug.UHead = k(u, 8)
-	debug.VHead = k(v, 8)
 
 	// Zeroize ephemeral values
 	utils.ZeroizeInt32(ATr)
 	utils.ZeroizeInt32(e1)
 	utils.ZeroizeInt32(e2)
 	utils.ZeroizeInt32(encoded)
+	utils.ZeroizeInt8(r)
+	utils.ZeroizeInt32(rInt32)
 
 	return &kmosaic.SLSSCiphertext{U: u, V: v}, debug, nil
 }
@@ -501,6 +500,11 @@ func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams
 // Decrypt decrypts an SLSS ciphertext
 func Decrypt(ct *kmosaic.SLSSCiphertext, sk kmosaic.SLSSSecretKey, params kmosaic.SLSSParams) []byte {
 	q := params.Q
+
+	// Validate vector length consistency to prevent out-of-bounds panic.
+	if len(ct.U) != len(sk.S) {
+		return nil
+	}
 
 	// m = v - s^T * u
 	sTu := innerProduct(ct.U, sk.S, q)

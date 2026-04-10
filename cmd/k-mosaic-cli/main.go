@@ -761,21 +761,17 @@ func kemSLSSDebug(args []string) {
 		message = make([]byte, 32)
 	}
 
-	ct, debug, err := slss.DebugEncrypt(pk.SLSS, message, pk.Params.SLSS, randomness)
+	_, debug, err := slss.DebugEncrypt(pk.SLSS, message, pk.Params.SLSS, randomness)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error during SLSS debug encrypt: %v\n", err)
 		os.Exit(1)
 	}
 
 	out := map[string]any{
-		"r_indices": debug.RIndices,
-		"r_values":  debug.RValues,
-		"e1_head":   debug.E1Head,
-		"e2_head":   debug.E2Head,
-		"u_head":    debug.UHead,
-		"v_head":    debug.VHead,
-		"u_len":     len(ct.U),
-		"v_len":     len(ct.V),
+		"u_len": debug.ULen,
+		"v_len": debug.VLen,
+		"w":     debug.W,
+		"r_nnz": debug.RNNz,
 	}
 
 	j, _ := json.MarshalIndent(out, "", "  ")
