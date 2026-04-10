@@ -26,6 +26,7 @@ const (
 	DomainEncKey         = "kmosaic-enc-key-v1"
 	DomainNonce          = "kmosaic-nonce-v1"
 	DomainImplicitReject = "kmosaic-kem-reject-v1"
+	MaxComponentSize     = 10 * 1024 * 1024 // 10MB max for any single component
 )
 
 // GenerateKeyPair generates a kMOSAIC key pair.
@@ -562,6 +563,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	// Read security level string
 	levelLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if levelLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: security level size exceeds maximum")
+	}
 	if offset+levelLen > len(data) {
 		return nil, errors.New("invalid public key: level string truncated")
 	}
@@ -577,8 +581,14 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	pk.Params = params
 
 	// Read SLSS public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: SLSS length field truncated")
+	}
 	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if slssLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: SLSS data size exceeds maximum")
+	}
 	if offset+slssLen > len(data) {
 		return nil, errors.New("invalid public key: SLSS data truncated")
 	}
@@ -590,8 +600,14 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	offset += slssLen
 
 	// Read TDD public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: TDD length field truncated")
+	}
 	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if tddLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: TDD data size exceeds maximum")
+	}
 	if offset+tddLen > len(data) {
 		return nil, errors.New("invalid public key: TDD data truncated")
 	}
@@ -603,8 +619,14 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	offset += tddLen
 
 	// Read EGRW public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: EGRW length field truncated")
+	}
 	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
+	if egrwLen > MaxComponentSize {
+		return nil, errors.New("invalid public key: EGRW data size exceeds maximum")
+	}
 	if offset+egrwLen > len(data) {
 		return nil, errors.New("invalid public key: EGRW data truncated")
 	}

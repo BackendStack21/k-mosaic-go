@@ -324,6 +324,10 @@ func Decrypt(ct *kmosaic.TDDCiphertext, sk kmosaic.TDDSecretKey, pk kmosaic.TDDP
 	n := params.N
 	encMsgLen := 8
 
+	if len(ct.Data) < encMsgLen {
+		return nil
+	}
+
 	masked := ct.Data[:len(ct.Data)-encMsgLen]
 
 	// Extract encrypted message

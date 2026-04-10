@@ -272,8 +272,8 @@ func TestKEMSLSSDebug(t *testing.T) {
 		t.Fatalf("unable to parse slss-debug output as json: %v, out: %s", err, debugOut)
 	}
 
-	// Verify expected debug fields exist
-	expectedFields := []string{"r_indices", "r_values", "e1_head", "e2_head", "u_head", "v_head", "u_len", "v_len"}
+	// Verify expected (non-sensitive) debug fields exist
+	expectedFields := []string{"u_len", "v_len", "w", "r_nnz"}
 	for _, field := range expectedFields {
 		if _, ok := debugInfo[field]; !ok {
 			t.Fatalf("slss-debug output missing field '%s': %v", field, debugInfo)
