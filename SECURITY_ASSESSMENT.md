@@ -4,6 +4,8 @@
 (the state after the first round of functional fixes), its README, CLI.md,
 BenchmarkReport.md, and the claims they make. The TypeScript reference
 implementation was consulted to tell porting bugs from design flaws.
+Sections 1 and 2 describe the original design; section 3 the 2.0.0 fixes;
+section 4 the 3.0.0 redesign that implements the original claims.
 
 **Verdict:** the construction as published did not provide confidentiality
 or unforgeability at all. Every finding below was reproduced with code in
@@ -232,3 +234,81 @@ instantiated.
   construction follows FIPS 204 and standard LWE encryption, but the
   transplant to unstructured matrices and the parameter choices are this
   review's, not a standard's.
+
+---
+
+## 4. Version 3.0: implementing the claims
+
+The original claims were "three distinct hard problems" and "defense in
+depth". Version 2.0 fixed the breaks but left a single-assumption library.
+Version 3.0 makes the claims true with problems that are actually hard and
+constructions that are actually usable.
+
+### 4.1 Why the original three problems could not be kept
+
+- **TDD (tensor decomposition).** The public tensor is `T = Σ a_i⊗b_i⊗c_i + E`
+  and the ciphertext masks a contraction of `T` with a uniformly random
+  tensor. Nothing the decryptor knows cancels that mask, so no decryption
+  procedure exists; the "decryption" could only work by deriving the key from
+  public data. A sound encryption scheme from noisy tensor decomposition
+  would need a trapdoor that this problem does not offer.
+- **EGRW (expander walks in SL(2, Z_p)).** The group is non-commutative, so
+  there is no Diffie-Hellman-style key agreement, and the group is tiny
+  (searchable in milliseconds, §1.3). Even with a large prime, path finding
+  for the standard `S`/`T` generators is known to be easy.
+
+### 4.2 The composition
+
+| Primitive  | Components                                    | Combiner                                           |
+| ---------- | --------------------------------------------- | -------------------------------------------------- |
+| KEM        | SLSS (unstructured LWE), QCSD (HQC)           | XOR secret sharing: both shares needed to recover the ephemeral secret, then Fujisaki-Okamoto |
+| Signatures | latsig (unstructured ML-DSA), uov, slhdsa     | AND combiner: all three signatures on `H(H(pk) ‖ M)` must verify |
+
+For the KEM, IND-CPA of the composite PKE follows if either component PKE is
+IND-CPA (an adversary who cannot distinguish one share learns nothing about
+the XOR), and the FO transform yields IND-CCA in the ROM. For signatures,
+EUF-CMA of the composite follows from EUF-CMA of any one component, because a
+composite forgery contains a forgery of each component on the same digest.
+Binding hashes over the component public keys, plus the inclusion of the
+composite public-key hash in the signed digest, prevent an attacker from
+swapping in components from other keys.
+
+### 4.3 The components and their parameter provenance
+
+- **SLSS** (`problems/slss`): §3.1, unchanged.
+- **QCSD** (`problems/qcsd`): the HQC construction with the published
+  **hqc-256** parameters (ring length 57637, Reed-Solomon [90,32] with
+  δ = 29, RM(1,7) duplicated 5×, weights 131/149/149). It is used at both
+  levels because it is the HQC set that encrypts exactly a 32-byte share.
+  HQC's decryption failure rate for this set is below 2^-256; the
+  implementation's Reed-Solomon and Reed-Muller decoders are tested against
+  injected errors up to their correction capability.
+- **latsig** (`problems/latsig`): §3.3, unchanged.
+- **uov** (`problems/uov`): UOV over F_256 with the **uov-Ip** (n = 112,
+  m = 44) and **uov-V** (n = 244, m = 96) parameters of the NIST submission,
+  compressed public keys (seed + P3 blocks, 43,576 / 446,992 bytes, matching
+  the submission's sizes), salted signing. The implementation checks the
+  defining property (every public form vanishes on the oil space) in its tests.
+- **slhdsa** (`problems/slhdsa`): FIPS 205 SLH-DSA-SHAKE-**128f** and
+  **256f**, "simple" tweakable hashes, hedged signing. Signature sizes
+  (17,088 and 49,856 bytes) match the standard, and the WOTS+, XMSS, FORS
+  and hypertree layers are tested separately.
+
+Mixed NIST levels within a composite are deliberate: the composite is at
+least as strong as its strongest component, and the weaker components still
+force the attacker to break an additional, independent problem.
+
+### 4.4 What this is and is not
+
+- It **is** a sound composition of standard constructions whose security
+  argument is the standard combiner argument, with every component's
+  parameters taken from a published analysis (except SLSS, see §3.5).
+- It **is not** externally reviewed. The transplant of ML-DSA to
+  unstructured matrices, the SLSS parameters and the implementation itself
+  are this repository's work.
+- Side channels are not addressed: GF(256) arithmetic uses lookup tables,
+  Gaussian elimination branches on secret data, and Go offers no
+  constant-time guarantees.
+- Cost is real: a composite signature public key is 1.2–2 MB and a signature
+  21–56 KB, because unstructured lattices and three-way signatures are not
+  small.

@@ -33,8 +33,8 @@ func TestKEMCiphertextDeterminism(t *testing.T) {
 		t.Fatalf("EncapsulateDeterministic 2 failed: %v", err)
 	}
 
-	ct1 := kem.SerializeCiphertext(&result1.Ciphertext)
-	ct2 := kem.SerializeCiphertext(&result2.Ciphertext)
+	ct1 := kem.SerializeCiphertext(&result1.Ciphertext, kp.PublicKey.Params)
+	ct2 := kem.SerializeCiphertext(&result2.Ciphertext, kp.PublicKey.Params)
 
 	t.Logf("Ciphertext 1 hash: %x", utils.SHA3256(ct1)[:16])
 	t.Logf("Ciphertext 2 hash: %x", utils.SHA3256(ct2)[:16])

@@ -2,244 +2,208 @@ package sign
 
 import (
 	"bytes"
-	"slices"
 	"testing"
+	"time"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
 	"github.com/BackendStack21/k-mosaic-go/core"
 	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
-func TestSign_Failures(t *testing.T) {
-	kp, err := GenerateKeyPair(kmosaic.MOS_128)
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg := []byte("message")
-	sig, err := Sign(&kp.SecretKey, &kp.PublicKey, msg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !Verify(&kp.PublicKey, msg, sig) {
-		t.Fatal("valid signature rejected")
-	}
-
-	// Wrong message
-	if Verify(&kp.PublicKey, []byte("wrong"), sig) {
-		t.Error("Verify passed with wrong message")
-	}
-
-	// Modified challenge (deep copy so the original is untouched)
-	bad := &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
-	bad.Challenge[0] ^= 1
-	if Verify(&kp.PublicKey, msg, bad) {
-		t.Error("Verify passed with modified challenge")
-	}
-
-	// Modified response: every coefficient of z is covered by the check.
-	for _, idx := range []int{0, len(sig.Z) / 2, len(sig.Z) - 1} {
-		bad = &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
-		bad.Z[idx] += 1
-		if Verify(&kp.PublicKey, msg, bad) {
-			t.Errorf("Verify passed with modified response at %d", idx)
-		}
-	}
-
-	// Response out of the allowed range
-	bad = &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
-	bad.Z[0] = int32(kp.PublicKey.Params.Gamma1)
-	if Verify(&kp.PublicKey, msg, bad) {
-		t.Error("Verify passed with out-of-range response")
-	}
-
-	// Wrong key
-	kp2, _ := GenerateKeyPair(kmosaic.MOS_128)
-	if Verify(&kp2.PublicKey, msg, sig) {
-		t.Error("Verify passed under a different public key")
-	}
-
-	// Mismatched key pair must be refused by Sign
-	if _, err := Sign(&kp.SecretKey, &kp2.PublicKey, msg); err == nil {
-		t.Error("Sign accepted a public key that does not match the secret key")
+func cloneSig(sig *kmosaic.MOSAICSignature) *kmosaic.MOSAICSignature {
+	return &kmosaic.MOSAICSignature{
+		Lattice: kmosaic.LatticeSignature{Challenge: append([]byte{}, sig.Lattice.Challenge...), Z: append([]int32{}, sig.Lattice.Z...)},
+		MQ:      kmosaic.MQSignature{S: append([]byte{}, sig.MQ.S...), Salt: append([]byte{}, sig.MQ.Salt...)},
+		Hash:    kmosaic.HashSignature{Data: append([]byte{}, sig.Hash.Data...)},
 	}
 }
 
-func TestSign_Deterministic(t *testing.T) {
+func TestRoundTripAllLevels(t *testing.T) {
+	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
+		t.Run(string(level), func(t *testing.T) {
+			st := time.Now()
+			kp, err := GenerateKeyPair(level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tk := time.Since(st)
+			msg := []byte("composite signature message")
+			st = time.Now()
+			sig, err := Sign(&kp.SecretKey, &kp.PublicKey, msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ts := time.Since(st)
+			st = time.Now()
+			if !Verify(&kp.PublicKey, msg, sig) {
+				t.Fatal("valid signature rejected")
+			}
+			tv := time.Since(st)
+			pkb := SerializePublicKey(&kp.PublicKey)
+			skb := SerializeSecretKey(&kp.SecretKey)
+			sb := SerializeSignature(sig)
+			t.Logf("keygen=%v sign=%v verify=%v pk=%d sk=%d sig=%d", tk, ts, tv, len(pkb), len(skb), len(sb))
+
+			if Verify(&kp.PublicKey, []byte("other message"), sig) {
+				t.Fatal("wrong message accepted")
+			}
+
+			// Every component must be checked: tamper with each one.
+			bad := cloneSig(sig)
+			bad.Lattice.Z[1]++
+			if Verify(&kp.PublicKey, msg, bad) {
+				t.Fatal("tampered lattice component accepted")
+			}
+			bad = cloneSig(sig)
+			bad.MQ.S[2] ^= 1
+			if Verify(&kp.PublicKey, msg, bad) {
+				t.Fatal("tampered MQ component accepted")
+			}
+			bad = cloneSig(sig)
+			bad.Hash.Data[len(bad.Hash.Data)-1] ^= 1
+			if Verify(&kp.PublicKey, msg, bad) {
+				t.Fatal("tampered hash component accepted")
+			}
+
+			// Serialization round trips.
+			pk2, err := DeserializePublicKey(pkb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(SerializePublicKey(pk2), pkb) {
+				t.Fatal("public key round trip failed")
+			}
+			sig2, err := DeserializeSignature(sb, pk2.Params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(SerializeSignature(sig2), sb) {
+				t.Fatal("signature round trip failed")
+			}
+			if !Verify(pk2, msg, sig2) {
+				t.Fatal("round-tripped signature rejected")
+			}
+			sk2, err := DeserializeSecretKey(skb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(SerializeSecretKey(sk2), skb) {
+				t.Fatal("secret key round trip failed")
+			}
+			sig3, err := Sign(sk2, pk2, msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !Verify(&kp.PublicKey, msg, sig3) {
+				t.Fatal("signature from deserialized secret key rejected")
+			}
+		})
+	}
+}
+
+func TestDeterministicKeyGen(t *testing.T) {
 	seed, _ := utils.SecureRandomBytes(32)
 	params, _ := core.GetSignParams(kmosaic.MOS_128)
-
 	kp1, err := GenerateKeyPairFromSeed(params, seed)
 	if err != nil {
-		t.Fatalf("GenerateKeyPairFromSeed failed: %v", err)
+		t.Fatal(err)
 	}
-	kp2, err := GenerateKeyPairFromSeed(params, seed)
-	if err != nil {
-		t.Fatalf("GenerateKeyPairFromSeed failed: %v", err)
-	}
-
+	kp2, _ := GenerateKeyPairFromSeed(params, seed)
 	if !bytes.Equal(SerializePublicKey(&kp1.PublicKey), SerializePublicKey(&kp2.PublicKey)) {
-		t.Error("GenerateKeyPairFromSeed not deterministic")
+		t.Fatal("key generation not deterministic")
 	}
 	if !bytes.Equal(SerializeSecretKey(&kp1.SecretKey), SerializeSecretKey(&kp2.SecretKey)) {
-		t.Error("GenerateKeyPairFromSeed secret key not deterministic")
+		t.Fatal("secret key generation not deterministic")
 	}
+	if _, err := GenerateKeyPairFromSeed(params, make([]byte, 10)); err == nil {
+		t.Fatal("short seed accepted")
+	}
+	bad := params
+	bad.Level = "MOS-999"
+	if _, err := GenerateKeyPairFromSeed(bad, seed); err == nil {
+		t.Fatal("unknown level accepted")
+	}
+}
 
-	// Signatures are hedged with fresh randomness, so two signatures on the
-	// same message differ but both verify.
+func TestKeyMismatchAndBinding(t *testing.T) {
+	kp1, _ := GenerateKeyPair(kmosaic.MOS_128)
+	kp2, _ := GenerateKeyPair(kmosaic.MOS_128)
 	msg := []byte("m")
-	s1, _ := Sign(&kp1.SecretKey, &kp1.PublicKey, msg)
-	s2, _ := Sign(&kp1.SecretKey, &kp1.PublicKey, msg)
-	if !Verify(&kp1.PublicKey, msg, s1) || !Verify(&kp1.PublicKey, msg, s2) {
-		t.Error("hedged signatures failed to verify")
+
+	if _, err := Sign(&kp1.SecretKey, &kp2.PublicKey, msg); err == nil {
+		t.Fatal("Sign accepted a mismatched public key")
 	}
-	if bytes.Equal(SerializeSignature(s1), SerializeSignature(s2)) {
-		t.Error("two hedged signatures were identical")
+	sig, _ := Sign(&kp1.SecretKey, nil, msg)
+	if !Verify(&kp1.PublicKey, msg, sig) {
+		t.Fatal("signature made without pk rejected")
 	}
-}
-
-func TestSign_SignatureShape(t *testing.T) {
-	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
-		t.Run(string(level), func(t *testing.T) {
-			kp, err := GenerateKeyPair(level)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := kp.PublicKey.Params
-			sig, err := Sign(&kp.SecretKey, &kp.PublicKey, []byte("shape"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(sig.Challenge) != p.CTildeSize {
-				t.Errorf("challenge length %d, want %d", len(sig.Challenge), p.CTildeSize)
-			}
-			if len(sig.Z) != p.N {
-				t.Errorf("response length %d, want %d", len(sig.Z), p.N)
-			}
-			if int(infNorm(sig.Z)) >= p.Gamma1-p.Beta {
-				t.Errorf("response norm %d not below gamma1-beta=%d", infNorm(sig.Z), p.Gamma1-p.Beta)
-			}
-		})
+	if Verify(&kp2.PublicKey, msg, sig) {
+		t.Fatal("signature accepted under a different key")
 	}
-}
 
-func TestSerialization(t *testing.T) {
-	kp, _ := GenerateKeyPair(kmosaic.MOS_128)
-	msg := []byte("message")
-	sig, _ := Sign(&kp.SecretKey, &kp.PublicKey, msg)
-
-	if len(SerializePublicKey(&kp.PublicKey)) == 0 {
-		t.Error("SerializePublicKey returned empty bytes")
+	// A public key assembled from components of two key pairs must fail the binding check.
+	hybrid := kp1.PublicKey
+	hybrid.MQ = kp2.PublicKey.MQ
+	if _, err := DeserializePublicKey(SerializePublicKey(&hybrid)); err == nil {
+		t.Fatal("hybrid public key passed binding validation")
 	}
-	if len(SerializeSignature(sig)) == 0 {
-		t.Error("SerializeSignature returned empty bytes")
-	}
-}
-
-func TestSerializeDeserializePublicKey(t *testing.T) {
-	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
-		t.Run(string(level), func(t *testing.T) {
-			kp, err := GenerateKeyPair(level)
-			if err != nil {
-				t.Fatalf("GenerateKeyPair failed: %v", err)
-			}
-
-			serialized := SerializePublicKey(&kp.PublicKey)
-			deserialized, err := DeserializePublicKey(serialized)
-			if err != nil {
-				t.Fatalf("DeserializePublicKey failed: %v", err)
-			}
-			if !bytes.Equal(serialized, SerializePublicKey(deserialized)) {
-				t.Error("Round-trip serialization of public key failed")
-			}
-			if !slices.Equal(deserialized.A, kp.PublicKey.A) {
-				t.Error("expanded matrix differs after deserialization")
-			}
-
-			msg := []byte("test message")
-			sig, err := Sign(&kp.SecretKey, &kp.PublicKey, msg)
-			if err != nil {
-				t.Fatalf("Sign failed: %v", err)
-			}
-			if !Verify(deserialized, msg, sig) {
-				t.Error("Verify failed with deserialized public key")
-			}
-		})
-	}
-}
-
-func TestSerializeDeserializeSecretKey(t *testing.T) {
-	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
-		t.Run(string(level), func(t *testing.T) {
-			kp, err := GenerateKeyPair(level)
-			if err != nil {
-				t.Fatalf("GenerateKeyPair failed: %v", err)
-			}
-
-			serialized := SerializeSecretKey(&kp.SecretKey)
-			deserialized, err := DeserializeSecretKey(serialized)
-			if err != nil {
-				t.Fatalf("DeserializeSecretKey failed: %v", err)
-			}
-			if !bytes.Equal(serialized, SerializeSecretKey(deserialized)) {
-				t.Error("Round-trip serialization of secret key failed")
-			}
-
-			msg := []byte("test message")
-			sig, err := Sign(deserialized, &kp.PublicKey, msg)
-			if err != nil {
-				t.Fatalf("Sign with deserialized key failed: %v", err)
-			}
-			if !Verify(&kp.PublicKey, msg, sig) {
-				t.Error("Signature from deserialized key failed to verify")
-			}
-		})
-	}
-}
-
-func TestSerializeDeserializeSignature(t *testing.T) {
-	for _, level := range []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256} {
-		t.Run(string(level), func(t *testing.T) {
-			kp, err := GenerateKeyPair(level)
-			if err != nil {
-				t.Fatalf("GenerateKeyPair failed: %v", err)
-			}
-
-			msg := []byte("test message for signature")
-			sig, err := Sign(&kp.SecretKey, &kp.PublicKey, msg)
-			if err != nil {
-				t.Fatalf("Sign failed: %v", err)
-			}
-
-			serialized := SerializeSignature(sig)
-			deserialized, err := DeserializeSignature(serialized)
-			if err != nil {
-				t.Fatalf("DeserializeSignature failed: %v", err)
-			}
-			if !bytes.Equal(serialized, SerializeSignature(deserialized)) {
-				t.Error("Round-trip serialization of signature failed")
-			}
-			if !Verify(&kp.PublicKey, msg, deserialized) {
-				t.Error("Deserialized signature failed to verify")
-			}
-		})
+	data := SerializePublicKey(&kp1.PublicKey)
+	data[len(data)-1] ^= 1
+	if _, err := DeserializePublicKey(data); err == nil {
+		t.Fatal("tampered binding accepted")
 	}
 }
 
 func TestDeserializeErrors(t *testing.T) {
+	params, _ := core.GetSignParams(kmosaic.MOS_128)
 	if _, err := DeserializePublicKey([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializePublicKey should fail with invalid data")
 	}
 	if _, err := DeserializeSecretKey([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializeSecretKey should fail with invalid data")
 	}
-	if _, err := DeserializeSignature([]byte{1, 2, 3}); err == nil {
+	if _, err := DeserializeSignature([]byte{1, 2, 3}, params); err == nil {
 		t.Error("DeserializeSignature should fail with invalid data")
 	}
-
-	badData := make([]byte, 100)
-	badData[0] = 99 // bogus level length
-	if _, err := DeserializePublicKey(badData); err == nil {
-		t.Error("DeserializePublicKey should fail with invalid security level")
+	kp, _ := GenerateKeyPair(kmosaic.MOS_128)
+	sig, _ := Sign(&kp.SecretKey, &kp.PublicKey, []byte("x"))
+	sb := SerializeSignature(sig)
+	for _, cut := range []int{3, 50, len(sb) / 2, len(sb) - 1} {
+		if _, err := DeserializeSignature(sb[:cut], params); err == nil {
+			t.Errorf("truncated signature (%d bytes) accepted", cut)
+		}
+	}
+	if _, err := DeserializeSignature(append(sb, 0), params); err == nil {
+		t.Error("signature with trailing data accepted")
+	}
+	if Verify(nil, []byte("x"), sig) || Verify(&kp.PublicKey, []byte("x"), nil) {
+		t.Error("nil inputs verified")
 	}
 }
+
+func TestRandError(t *testing.T) {
+	old := utils.RandReader
+	utils.RandReader = &errorReader{}
+	defer func() { utils.RandReader = old }()
+	if _, err := GenerateKeyPair(kmosaic.MOS128); err == nil {
+		t.Error("expected error from rand failure in key generation")
+	}
+	utils.RandReader = old
+	kp, _ := GenerateKeyPair(kmosaic.MOS128)
+	utils.RandReader = &errorReader{}
+	if _, err := Sign(&kp.SecretKey, &kp.PublicKey, []byte("test")); err == nil {
+		t.Error("expected error from rand failure in signing")
+	}
+}
+
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (n int, err error) {
+	return 0, errReader
+}
+
+var errReader = &readError{}
+
+type readError struct{}
+
+func (*readError) Error() string { return "simulated rand error" }

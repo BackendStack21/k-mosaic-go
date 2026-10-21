@@ -1,4 +1,4 @@
-package sign
+package latsig
 
 import (
 	"errors"
@@ -20,7 +20,7 @@ func TestGenerateKeyPair_Coverage(t *testing.T) {
 }
 
 func TestGenerateKeyPairFromSeed_Coverage(t *testing.T) {
-	params, _ := core.GetSignParams(kmosaic.MOS128)
+	params, _ := core.GetLatticeSignParams(kmosaic.MOS128)
 	seed, _ := utils.SecureRandomBytes(32)
 	keys, err := GenerateKeyPairFromSeed(params, seed)
 	if err != nil {
@@ -32,14 +32,14 @@ func TestGenerateKeyPairFromSeed_Coverage(t *testing.T) {
 }
 
 func TestGenerateKeyPairFromSeed_ShortSeed(t *testing.T) {
-	params, _ := core.GetSignParams(kmosaic.MOS128)
+	params, _ := core.GetLatticeSignParams(kmosaic.MOS128)
 	if _, err := GenerateKeyPairFromSeed(params, make([]byte, 10)); err == nil {
 		t.Error("expected error for short seed")
 	}
 }
 
 func TestGenerateKeyPairFromSeed_UnknownParams(t *testing.T) {
-	params, _ := core.GetSignParams(kmosaic.MOS128)
+	params, _ := core.GetLatticeSignParams(kmosaic.MOS128)
 	params.Tau = 50
 	params.Beta = params.Tau * params.Eta
 	seed, _ := utils.SecureRandomBytes(32)
@@ -73,7 +73,7 @@ func TestVerify_WrongShape(t *testing.T) {
 	keys, _ := GenerateKeyPair(kmosaic.MOS128)
 	p := keys.PublicKey.Params
 
-	cases := map[string]*kmosaic.MOSAICSignature{
+	cases := map[string]*kmosaic.LatticeSignature{
 		"short challenge": {Challenge: make([]byte, 10), Z: make([]int32, p.N)},
 		"short response":  {Challenge: make([]byte, p.CTildeSize), Z: make([]int32, p.N-1)},
 		"nil":             nil,
@@ -83,7 +83,7 @@ func TestVerify_WrongShape(t *testing.T) {
 			t.Errorf("%s: signature with wrong shape should be invalid", name)
 		}
 	}
-	if Verify(nil, []byte("test"), &kmosaic.MOSAICSignature{}) {
+	if Verify(nil, []byte("test"), &kmosaic.LatticeSignature{}) {
 		t.Error("nil public key must not verify")
 	}
 }
@@ -142,7 +142,7 @@ func TestSign_RandError(t *testing.T) {
 }
 
 func TestLatticeHelpers(t *testing.T) {
-	q := core.SignQ
+	q := core.LatticeSignQ
 	gamma2 := (q - 1) / 32
 	alpha := int32(2 * gamma2)
 

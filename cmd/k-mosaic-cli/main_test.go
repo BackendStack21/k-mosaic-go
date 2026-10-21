@@ -273,7 +273,7 @@ func TestKEMPKInspect(t *testing.T) {
 	}
 
 	// Verify expected inspection fields exist
-	expectedFields := []string{"embedded_binding", "computed_binding", "slss_hash", "tdd_hash", "egrw_hash"}
+	expectedFields := []string{"embedded_binding", "computed_binding", "slss_hash", "code_hash", "binding_valid"}
 	for _, field := range expectedFields {
 		if _, ok := inspectInfo[field]; !ok {
 			t.Fatalf("pk-inspect output missing field '%s': %v", field, inspectInfo)

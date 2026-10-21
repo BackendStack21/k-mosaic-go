@@ -1,4 +1,4 @@
-package sign
+package latsig
 
 import (
 	"testing"
@@ -21,7 +21,7 @@ func TestForgeryWithoutSecretKeyFails(t *testing.T) {
 	msg := []byte("I owe the attacker one million dollars")
 
 	// Attempt 1: random challenge with a zero response.
-	forged := &kmosaic.MOSAICSignature{Challenge: make([]byte, p.CTildeSize), Z: make([]int32, p.N)}
+	forged := &kmosaic.LatticeSignature{Challenge: make([]byte, p.CTildeSize), Z: make([]int32, p.N)}
 	if Verify(pk, msg, forged) {
 		t.Fatal("zero signature verified")
 	}
@@ -36,7 +36,7 @@ func TestForgeryWithoutSecretKeyFails(t *testing.T) {
 	mu := shake(TrSize, tr, msg)
 	w := matVec(pk.A, z, p.M, p.N, p.Q)
 	guess := shake(p.CTildeSize, mu, packW1(highBits(w, p.Q, p.Gamma2)))
-	forged = &kmosaic.MOSAICSignature{Challenge: guess, Z: z}
+	forged = &kmosaic.LatticeSignature{Challenge: guess, Z: z}
 	if Verify(pk, msg, forged) {
 		t.Fatal("challenge-first forgery verified")
 	}
@@ -44,7 +44,7 @@ func TestForgeryWithoutSecretKeyFails(t *testing.T) {
 	// Attempt 3: random signatures.
 	for i := 0; i < 8; i++ {
 		c, _ := utils.SecureRandomBytes(p.CTildeSize)
-		if Verify(pk, msg, &kmosaic.MOSAICSignature{Challenge: c, Z: z}) {
+		if Verify(pk, msg, &kmosaic.LatticeSignature{Challenge: c, Z: z}) {
 			t.Fatal("random signature verified")
 		}
 	}

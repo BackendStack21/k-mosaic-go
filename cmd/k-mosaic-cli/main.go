@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.0.0"
+	version = "3.0.0"
 	appName = "k-mosaic-cli"
 )
 
@@ -267,7 +267,7 @@ func kemKeygen(args []string) {
 
 	// Serialize key pair
 	pkBytes := kem.SerializePublicKey(&kp.PublicKey)
-	skBytes := kem.SerializeSecretKey(&kp.SecretKey)
+	skBytes := kem.SerializeSecretKey(&kp.SecretKey, kp.PublicKey.Params)
 
 	export := KEMKeyPairExport{
 		SecurityLevel: string(config.SecurityLevel),
@@ -331,7 +331,7 @@ func kemEncapsulate(args []string) {
 		fmt.Fprintf(os.Stderr, "Encapsulation took: %v\n", elapsed)
 	}
 
-	ctBytes := kem.SerializeCiphertext(&result.Ciphertext)
+	ctBytes := kem.SerializeCiphertext(&result.Ciphertext, pk.Params)
 
 	export := EncapsulationExport{
 		Ciphertext:   encodeBytes(ctBytes, config.OutputFormat),
@@ -404,7 +404,7 @@ func kemEncapsulateDet(args []string) {
 		fmt.Fprintf(os.Stderr, "Deterministic encapsulation took: %v\n", elapsed)
 	}
 
-	ctBytes := kem.SerializeCiphertext(&result.Ciphertext)
+	ctBytes := kem.SerializeCiphertext(&result.Ciphertext, pk.Params)
 
 	export := EncapsulationExport{
 		Ciphertext:   encodeBytes(ctBytes, config.OutputFormat),
@@ -441,103 +441,47 @@ func kemPKInspect(args []string) {
 		os.Exit(1)
 	}
 
+	// Parse the length-prefixed layout without validating the binding, so a
+	// corrupted key can still be inspected.
+	// [level_len:4][level][slss_len:4][slss][code_len:4][code][binding:32]
 	off := 0
-	if len(pkData) < 4 {
-		fmt.Fprintf(os.Stderr, "Invalid public key: too short to read level\n")
-		os.Exit(1)
+	readLV := func(what string) []byte {
+		if off+4 > len(pkData) {
+			fmt.Fprintf(os.Stderr, "Invalid public key: %s length missing\n", what)
+			os.Exit(1)
+		}
+		n := int(binary.LittleEndian.Uint32(pkData[off:]))
+		newOff, err := SafeAdd(off, 4)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
+			os.Exit(1)
+		}
+		off = newOff
+		if n > len(pkData)-off {
+			fmt.Fprintf(os.Stderr, "Invalid public key: %s truncated\n", what)
+			os.Exit(1)
+		}
+		v := pkData[off : off+n]
+		off += n
+		return v
 	}
-	levelLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	var newOff int
-	newOff, err = SafeAdd(off, 4+levelLen)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+4 > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: truncated\n")
-		os.Exit(1)
-	}
-	slssLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	newOff, err = SafeAdd(off, 4)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+slssLen > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: SLSS truncated\n")
-		os.Exit(1)
-	}
-	slssBytes := pkData[off : off+slssLen]
-	newOff, err = SafeAdd(off, slssLen)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+4 > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: truncated after SLSS\n")
-		os.Exit(1)
-	}
-	tddLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	newOff, err = SafeAdd(off, 4)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+tddLen > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: TDD truncated\n")
-		os.Exit(1)
-	}
-	tddBytes := pkData[off : off+tddLen]
-	newOff, err = SafeAdd(off, tddLen)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+4 > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: truncated after TDD\n")
-		os.Exit(1)
-	}
-	egrwLen := int(binary.LittleEndian.Uint32(pkData[off:]))
-	newOff, err = SafeAdd(off, 4)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+egrwLen > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: EGRW truncated\n")
-		os.Exit(1)
-	}
-	egrwBytes := pkData[off : off+egrwLen]
-	newOff, err = SafeAdd(off, egrwLen)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: offset overflow: %v\n", err)
-		os.Exit(1)
-	}
-	off = newOff
-	if off+32 > len(pkData) {
-		fmt.Fprintf(os.Stderr, "Invalid public key: binding truncated\n")
+	level := readLV("level")
+	slssBytes := readLV("SLSS component")
+	codeBytes := readLV("code component")
+	if off+32 != len(pkData) {
+		fmt.Fprintf(os.Stderr, "Invalid public key: binding has wrong length\n")
 		os.Exit(1)
 	}
 	embedded := pkData[off : off+32]
 
-	computed := entanglement.ComputeBinding(slssBytes, tddBytes, egrwBytes)
-	// Compute component hashes for comparison
-	slssHash := utils.SHA3256(slssBytes)
-	tddHash := utils.SHA3256(tddBytes)
-	egrwHash := utils.SHA3256(egrwBytes)
-
+	computed := entanglement.ComputeBinding(slssBytes, codeBytes)
 	out := map[string]string{
+		"level":            string(level),
 		"embedded_binding": encodeBytes(embedded, config.OutputFormat),
 		"computed_binding": encodeBytes(computed, config.OutputFormat),
-		"slss_hash":        encodeBytes(slssHash, config.OutputFormat),
-		"tdd_hash":         encodeBytes(tddHash, config.OutputFormat),
-		"egrw_hash":        encodeBytes(egrwHash, config.OutputFormat),
+		"slss_hash":        encodeBytes(utils.SHA3256(slssBytes), config.OutputFormat),
+		"code_hash":        encodeBytes(utils.SHA3256(codeBytes), config.OutputFormat),
+		"binding_valid":    fmt.Sprintf("%v", utils.ConstantTimeEqual(embedded, computed)),
 	}
 	j, _ := json.MarshalIndent(out, "", "  ")
 	writeOutput(j, config.OutputFile)
@@ -579,7 +523,7 @@ func kemDecapsulate(args []string) {
 		os.Exit(1)
 	}
 
-	ct, err := kem.DeserializeCiphertext(ctData)
+	ct, err := kem.DeserializeCiphertext(ctData, pk.Params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error deserializing ciphertext: %v\n", err)
 		os.Exit(1)
@@ -674,7 +618,7 @@ func kemEncrypt(args []string) {
 		fmt.Fprintf(os.Stderr, "Encryption took: %v\n", elapsed)
 	}
 
-	encBytes := kem.SerializeEncryptedMessage(encrypted)
+	encBytes := kem.SerializeEncryptedMessage(encrypted, pk.Params)
 
 	export := EncryptedExport{
 		Ciphertext: encodeBytes(encBytes, config.OutputFormat),
@@ -731,7 +675,7 @@ func kemDecrypt(args []string) {
 		os.Exit(1)
 	}
 
-	em, err := kem.DeserializeEncryptedMessage(ctData)
+	em, err := kem.DeserializeEncryptedMessage(ctData, pk.Params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error deserializing encrypted message: %v\n", err)
 		os.Exit(1)
@@ -1019,7 +963,7 @@ func signVerify(args []string) {
 		os.Exit(1)
 	}
 
-	sig, err := sign.DeserializeSignature(sigData)
+	sig, err := sign.DeserializeSignature(sigData, pk.Params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error deserializing signature: %v\n", err)
 		os.Exit(1)

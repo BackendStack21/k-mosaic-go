@@ -1,17 +1,15 @@
-// Package kmosaic implements the kMOSAIC post-quantum cryptographic algorithm.
-// This package provides high-level exports for key encapsulation and digital signatures
-// using the kMOSAIC hybrid approach combining three independent hard problems:
-// SLSS (Sparse Lattice Subset Sum), TDD (Tensor Decomposition Distinguishing),
-// and EGRW (Expander Graph Random Walk).
-//
-// Only the SLSS (LWE) component contributes security; see SECURITY_ASSESSMENT.md.
+// Package kmosaic implements the kMOSAIC post-quantum cryptographic library:
+// a composition of independent post-quantum hard problems (unstructured
+// lattices, quasi-cyclic codes, multivariate quadratics and hash functions)
+// such that breaking a primitive requires breaking every component it uses.
+// See types.go and SECURITY_ASSESSMENT.md.
 package kmosaic
 
 // Re-export commonly used functions through package-level wrappers.
 // Users can also import specific sub-packages directly for more control.
 
 // Version of the kMOSAIC Go implementation.
-const Version = "2.0.0"
+const Version = "3.0.0"
 
 // API summary:
 //

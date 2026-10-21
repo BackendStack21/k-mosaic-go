@@ -1,21 +1,27 @@
-// Package kmosaic implements the kMOSAIC post-quantum cryptographic algorithm.
+// Package kmosaic implements the kMOSAIC post-quantum cryptographic library.
 //
-// kMOSAIC (Multi-Oracle Structured Algebraic Intractability Composition)
-// is a novel post-quantum cryptographic construction that achieves defense-in-depth
-// security by cryptographically entangling three independent mathematical hard problems.
+// kMOSAIC composes independent post-quantum hard problems so that breaking a
+// primitive requires breaking every component it is built from:
 //
-// WARNING: This is an experimental cryptographic construction that has NOT been
-// formally verified by academic peer review. DO NOT use in production systems
-// protecting sensitive data.
+//   - KEM: unstructured LWE with sparse ternary secrets (SLSS) and quasi-cyclic
+//     syndrome decoding (QCSD, the HQC construction). The ephemeral secret is
+//     split into one share per component; recovering it needs both.
+//   - Signatures: an unstructured Fiat-Shamir-with-aborts lattice signature
+//     (SIS/LWE), an Unbalanced Oil-and-Vinegar multivariate signature (MQ), and
+//     a stateless hash-based signature (SLH-DSA). A composite signature is
+//     valid only if all three are valid, so a forger must forge all three.
+//
+// WARNING: This is an experimental library that has not been reviewed outside
+// this repository. DO NOT use in production systems protecting sensitive data.
 package kmosaic
 
 // SecurityLevel represents the security level of kMOSAIC parameters.
 type SecurityLevel string
 
 const (
-	// MOS128 provides 128-bit post-quantum security.
+	// MOS128 is the smaller parameter set.
 	MOS128 SecurityLevel = "MOS-128"
-	// MOS256 provides 256-bit post-quantum security.
+	// MOS256 is the larger parameter set.
 	MOS256 SecurityLevel = "MOS-256"
 	// Aliases with underscore for convenience
 	MOS_128 SecurityLevel = MOS128
@@ -23,16 +29,15 @@ const (
 )
 
 // =============================================================================
-// Parameter Types
+// SLSS: unstructured LWE encryption with sparse ternary secrets
 // =============================================================================
 
-// SLSSParams contains parameters for the Sparse Lattice Subset Sum problem,
-// an LWE instance with sparse ternary secrets.
+// SLSSParams contains parameters for the SLSS component, an LWE instance with
+// sparse ternary secrets.
 //
 // The public key is (A, T = A·S + E) with A ∈ Z_q^{M×N} expanded from a public
 // seed, S ∈ {-1,0,1}^{N×L} with W non-zero entries per column and E ∈ Z^{M×L}
-// discrete Gaussian. Each of the L secret columns protects one message bit,
-// so a ciphertext never reuses an inner product across bits.
+// discrete Gaussian. Each of the L secret columns protects one message bit.
 type SLSSParams struct {
 	N     int     `json:"n"`     // Secret dimension (columns of A)
 	M     int     `json:"m"`     // Number of LWE samples (rows of A)
@@ -41,42 +46,6 @@ type SLSSParams struct {
 	Sigma float64 `json:"sigma"` // Error standard deviation
 	L     int     `json:"l"`     // Secret columns = message bits per ciphertext
 }
-
-// TDDParams contains parameters for the Tensor Decomposition Distinguishing problem.
-type TDDParams struct {
-	N     int     `json:"n"`     // Tensor dimension
-	R     int     `json:"r"`     // Tensor rank
-	Q     int     `json:"q"`     // Modulus
-	Sigma float64 `json:"sigma"` // Noise standard deviation
-}
-
-// EGRWParams contains parameters for the Expander Graph Random Walk problem.
-type EGRWParams struct {
-	P int `json:"p"` // Prime for SL(2, Z_p)
-	K int `json:"k"` // Walk length
-}
-
-// MOSAICParams contains the complete parameter set for a security level.
-type MOSAICParams struct {
-	Level SecurityLevel `json:"level"`
-	SLSS  SLSSParams    `json:"slss"`
-	TDD   TDDParams     `json:"tdd"`
-	EGRW  EGRWParams    `json:"egrw"`
-}
-
-// =============================================================================
-// SL(2, Z_p) Element
-// =============================================================================
-
-// SL2Element represents an element of the special linear group SL(2, Z_p).
-// It is a 2x2 matrix [[A, B], [C, D]] with determinant 1.
-type SL2Element struct {
-	A, B, C, D int
-}
-
-// =============================================================================
-// SLSS Key Types
-// =============================================================================
 
 // SLSSPublicKey is the public key for SLSS.
 type SLSSPublicKey struct {
@@ -103,102 +72,224 @@ type SLSSKeyPair struct {
 }
 
 // =============================================================================
-// TDD Key Types
+// QCSD: quasi-cyclic syndrome decoding encryption (HQC construction)
 // =============================================================================
 
-// TDDFactors contains the rank-r factor triples for tensor decomposition.
-type TDDFactors struct {
-	A [][]int32 // r vectors of dimension n
-	B [][]int32
-	C [][]int32
+// CodeParams contains parameters for the code-based component. Arithmetic is
+// in F_2[X]/(X^N - 1); the message is protected by a Reed-Solomon [N1, K]
+// outer code over F_256 whose symbols are encoded with a duplicated first-order
+// Reed-Muller RM(1,7) inner code.
+type CodeParams struct {
+	N     int `json:"n"`     // Length of the quasi-cyclic ring (a prime)
+	N1    int `json:"n1"`    // Reed-Solomon code length in bytes
+	K     int `json:"k"`     // Reed-Solomon dimension in bytes = message bytes
+	Delta int `json:"delta"` // Reed-Solomon correction capability: N1 - K = 2*Delta
+	Mult  int `json:"mult"`  // Reed-Muller duplication multiplicity; N2 = 128*Mult bits
+	W     int `json:"w"`     // Hamming weight of the secret vectors x, y
+	WR    int `json:"wr"`    // Hamming weight of the ephemeral vectors r1, r2
+	WE    int `json:"we"`    // Hamming weight of the ephemeral error e
 }
 
-// TDDPublicKey is the public key for TDD.
-type TDDPublicKey struct {
-	T []int32 // n x n x n tensor (flattened)
+// CodePublicKey is the public key for the code-based component: (h, s = x + h·y).
+type CodePublicKey struct {
+	Seed []byte   // 32-byte public seed from which h is expanded
+	H    []uint64 // h as an N-bit vector; derived from Seed, not serialized
+	S    []uint64 // s as an N-bit vector
 }
 
-// TDDSecretKey is the secret key for TDD.
-type TDDSecretKey struct {
-	Factors TDDFactors
+// CodeSecretKey is the secret key for the code-based component.
+type CodeSecretKey struct {
+	X []uint64 // x as an N-bit vector of weight W
+	Y []uint64 // y as an N-bit vector of weight W
 }
 
-// TDDCiphertext is the ciphertext for TDD encryption.
-type TDDCiphertext struct {
-	Data []int32
+// CodeCiphertext is the ciphertext for the code-based component.
+type CodeCiphertext struct {
+	U []uint64 // u = r1 + h·r2, N bits
+	V []uint64 // v = truncate(mG + s·r2 + e), N1*N2 bits
 }
 
-// TDDKeyPair contains both public and secret keys for TDD.
-type TDDKeyPair struct {
-	PublicKey TDDPublicKey
-	SecretKey TDDSecretKey
-}
-
-// =============================================================================
-// EGRW Key Types
-// =============================================================================
-
-// EGRWPublicKey is the public key for EGRW.
-type EGRWPublicKey struct {
-	VStart SL2Element
-	VEnd   SL2Element
-}
-
-// EGRWSecretKey is the secret key for EGRW.
-type EGRWSecretKey struct {
-	Walk []int // Sequence of generator indices (0-3)
-}
-
-// EGRWCiphertext is the ciphertext for EGRW encryption.
-type EGRWCiphertext struct {
-	Vertex     SL2Element
-	Commitment []byte
-}
-
-// EGRWKeyPair contains both public and secret keys for EGRW.
-type EGRWKeyPair struct {
-	PublicKey EGRWPublicKey
-	SecretKey EGRWSecretKey
+// CodeKeyPair contains both public and secret keys for the code-based component.
+type CodeKeyPair struct {
+	PublicKey CodePublicKey
+	SecretKey CodeSecretKey
 }
 
 // =============================================================================
-// Composite MOSAIC Types
+// Lattice signature: Fiat-Shamir with aborts over unstructured matrices
 // =============================================================================
 
-// MOSAICPublicKey is the composite public key for the full kMOSAIC scheme.
+// LatticeSignParams contains the parameters of the lattice signature component.
+//
+// The scheme is a Fiat-Shamir-with-aborts signature over unstructured LWE/SIS
+// (the construction of CRYSTALS-Dilithium, FIPS 204, with matrices over Z_q
+// instead of polynomial rings). It proves knowledge of the short matrices
+// (S1, S2) with T = A·S1 + S2 (mod Q).
+type LatticeSignParams struct {
+	N          int `json:"n"`           // Columns of A; dimension of the mask y and response z
+	M          int `json:"m"`           // Rows of A; dimension of the commitment w
+	L          int `json:"l"`           // Columns of S1/S2/T; length of the challenge vector c
+	Q          int `json:"q"`           // Prime modulus
+	Eta        int `json:"eta"`         // Secret entries are uniform in [-Eta, Eta]
+	Tau        int `json:"tau"`         // Number of ±1 entries in the challenge c
+	Gamma1     int `json:"gamma1"`      // Mask y is uniform in (-Gamma1, Gamma1]
+	Gamma2     int `json:"gamma2"`      // Low-order rounding range; HighBits use alpha = 2*Gamma2
+	Beta       int `json:"beta"`        // Tau*Eta: bound on ||S1·c||∞ and ||S2·c||∞
+	CTildeSize int `json:"ctilde_size"` // Bytes of the challenge hash c̃
+}
+
+// LatticeSignPublicKey is the public key of the lattice signature component.
+type LatticeSignPublicKey struct {
+	Params LatticeSignParams
+	Rho    []byte  // 32-byte public seed from which A is expanded
+	T      []int32 // M x L matrix (flattened, row-major): T = A·S1 + S2 mod Q
+	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
+}
+
+// LatticeSignSecretKey is the secret key of the lattice signature component.
+type LatticeSignSecretKey struct {
+	Params LatticeSignParams
+	Rho    []byte  // Public seed of A
+	K      []byte  // 32-byte signing PRF key
+	Tr     []byte  // 64-byte hash of the serialized public key
+	S1     []int8  // N x L matrix (flattened, row-major), entries in [-Eta, Eta]
+	S2     []int8  // M x L matrix (flattened, row-major), entries in [-Eta, Eta]
+	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
+}
+
+// LatticeSignKeyPair contains both keys of the lattice signature component.
+type LatticeSignKeyPair struct {
+	PublicKey LatticeSignPublicKey
+	SecretKey LatticeSignSecretKey
+}
+
+// LatticeSignature is a lattice signature: the challenge hash c̃ and the response z.
+type LatticeSignature struct {
+	Challenge []byte  // c̃ = H(μ || HighBits(A·y)), CTildeSize bytes
+	Z         []int32 // z = y + S1·c, N entries with ||z||∞ < Gamma1 - Beta
+}
+
+// =============================================================================
+// MQ signature: Unbalanced Oil and Vinegar over F_256
+// =============================================================================
+
+// MQParams contains the parameters of the multivariate (UOV) signature component.
+// There are N variables (V = N - M vinegar, M oil) and M quadratic equations
+// over F_256.
+type MQParams struct {
+	N int `json:"n"` // Number of variables
+	M int `json:"m"` // Number of equations = oil variables
+}
+
+// MQPublicKey is a compressed UOV public key: the seed that expands the P1
+// and P2 blocks of every public quadratic form, plus the P3 blocks.
+type MQPublicKey struct {
+	Seed []byte // 16-byte public seed
+	P3   []byte // M blocks of M(M+1)/2 upper-triangular entries
+	P1   []byte // M blocks of V(V+1)/2 entries, expanded from Seed; not serialized
+	P2   []byte // M blocks of V*M entries, expanded from Seed; not serialized
+}
+
+// MQSecretKey is an expanded UOV secret key.
+type MQSecretKey struct {
+	Seed   []byte // 32-byte secret seed
+	PKSeed []byte // 16-byte public seed
+	O      []byte // V x M oil matrix (row-major)
+	P1     []byte // as in the public key
+	S      []byte // M blocks of V x M matrices S_i = (P1_i + P1_i^T)·O + P2_i
+}
+
+// MQKeyPair contains both keys of the MQ signature component.
+type MQKeyPair struct {
+	PublicKey MQPublicKey
+	SecretKey MQSecretKey
+}
+
+// MQSignature is a UOV signature: the preimage s and the salt.
+type MQSignature struct {
+	S    []byte // N field elements
+	Salt []byte // 16 bytes
+}
+
+// =============================================================================
+// Hash-based signature: SLH-DSA (SPHINCS+) with SHAKE256
+// =============================================================================
+
+// HashSignParams contains the parameters of the stateless hash-based signature
+// component (FIPS 205 SLH-DSA with SHAKE256).
+type HashSignParams struct {
+	N   int `json:"n"`    // Security parameter in bytes (hash output size)
+	H   int `json:"h"`    // Total hypertree height
+	D   int `json:"d"`    // Number of hypertree layers
+	A   int `json:"a"`    // FORS tree height
+	K   int `json:"k"`    // Number of FORS trees
+	LgW int `json:"lg_w"` // log2 of the Winternitz parameter (4)
+	M   int `json:"m"`    // Message digest length in bytes
+}
+
+// HashSignPublicKey is an SLH-DSA public key.
+type HashSignPublicKey struct {
+	Seed []byte // PK.seed, N bytes
+	Root []byte // PK.root, N bytes
+}
+
+// HashSignSecretKey is an SLH-DSA secret key.
+type HashSignSecretKey struct {
+	Seed   []byte // SK.seed, N bytes
+	PRF    []byte // SK.prf, N bytes
+	PKSeed []byte // PK.seed, N bytes
+	PKRoot []byte // PK.root, N bytes
+}
+
+// HashSignKeyPair contains both keys of the hash-based signature component.
+type HashSignKeyPair struct {
+	PublicKey HashSignPublicKey
+	SecretKey HashSignSecretKey
+}
+
+// HashSignature is an SLH-DSA signature (R || FORS signature || hypertree signature).
+type HashSignature struct {
+	Data []byte
+}
+
+// =============================================================================
+// Composite KEM types
+// =============================================================================
+
+// MOSAICParams contains the complete KEM parameter set for a security level.
+type MOSAICParams struct {
+	Level SecurityLevel `json:"level"`
+	SLSS  SLSSParams    `json:"slss"`
+	Code  CodeParams    `json:"code"`
+}
+
+// MOSAICPublicKey is the composite KEM public key.
 type MOSAICPublicKey struct {
 	SLSS    SLSSPublicKey
-	TDD     TDDPublicKey
-	EGRW    EGRWPublicKey
-	Binding []byte // 32-byte binding hash
+	Code    CodePublicKey
+	Binding []byte // 32-byte binding hash of the component public keys
 	Params  MOSAICParams
 }
 
-// MOSAICSecretKey is the composite secret key for the full kMOSAIC scheme.
+// MOSAICSecretKey is the composite KEM secret key.
 type MOSAICSecretKey struct {
 	SLSS          SLSSSecretKey
-	TDD           TDDSecretKey
-	EGRW          EGRWSecretKey
-	Seed          []byte // Original seed for implicit rejection
+	Code          CodeSecretKey
+	Seed          []byte // Original seed; also keys the implicit-rejection value
 	PublicKeyHash []byte // Hash of public key for CCA security
 }
 
-// MOSAICKeyPair contains both public and secret keys.
+// MOSAICKeyPair contains both composite KEM keys.
 type MOSAICKeyPair struct {
 	PublicKey MOSAICPublicKey
 	SecretKey MOSAICSecretKey
 }
 
-// =============================================================================
-// KEM Types
-// =============================================================================
-
 // MOSAICCiphertext is the composite ciphertext from KEM encapsulation.
 type MOSAICCiphertext struct {
 	C1    SLSSCiphertext
-	C2    TDDCiphertext
-	C3    EGRWCiphertext
-	Proof []byte
+	C2    CodeCiphertext
+	Proof []byte // Hash binding of the shares to the component ciphertexts
 }
 
 // EncapsulationResult contains the result of KEM encapsulation.
@@ -215,82 +306,46 @@ type EncryptedMessage struct {
 }
 
 // =============================================================================
-// Signature Types
+// Composite signature types
 // =============================================================================
 
-// SignParams contains the parameters of the lattice signature scheme.
-//
-// The scheme is a Fiat-Shamir-with-aborts signature over unstructured
-// module-free LWE/SIS (the construction of CRYSTALS-Dilithium, FIPS 204, with
-// matrices over Z_q instead of polynomial rings). It proves knowledge of the
-// short matrices (S1, S2) with T = A·S1 + S2 (mod Q).
+// SignParams contains the complete signature parameter set for a security level.
 type SignParams struct {
-	N          int `json:"n"`           // Columns of A; dimension of the mask y and response z
-	M          int `json:"m"`           // Rows of A; dimension of the commitment w
-	L          int `json:"l"`           // Columns of S1/S2/T; length of the challenge vector c
-	Q          int `json:"q"`           // Prime modulus
-	Eta        int `json:"eta"`         // Secret entries are uniform in [-Eta, Eta]
-	Tau        int `json:"tau"`         // Number of ±1 entries in the challenge c
-	Gamma1     int `json:"gamma1"`      // Mask y is uniform in (-Gamma1, Gamma1]
-	Gamma2     int `json:"gamma2"`      // Low-order rounding range; HighBits use alpha = 2*Gamma2
-	Beta       int `json:"beta"`        // Tau*Eta: bound on ||S1·c||∞ and ||S2·c||∞
-	CTildeSize int `json:"ctilde_size"` // Bytes of the challenge hash c̃
+	Level   SecurityLevel     `json:"level"`
+	Lattice LatticeSignParams `json:"lattice"`
+	MQ      MQParams          `json:"mq"`
+	Hash    HashSignParams    `json:"hash"`
 }
 
-// MOSAICSignPublicKey is the public key for signature operations.
+// MOSAICSignPublicKey is the composite signature public key.
 type MOSAICSignPublicKey struct {
-	Params SignParams
-	Rho    []byte  // 32-byte public seed from which A is expanded
-	T      []int32 // M x L matrix (flattened, row-major): T = A·S1 + S2 mod Q
-	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
+	Params  SignParams
+	Lattice LatticeSignPublicKey
+	MQ      MQPublicKey
+	Hash    HashSignPublicKey
+	Binding []byte // 32-byte binding hash of the component public keys
 }
 
-// MOSAICSignSecretKey is the secret key for signature operations.
+// MOSAICSignSecretKey is the composite signature secret key.
 type MOSAICSignSecretKey struct {
-	Params SignParams
-	Rho    []byte  // Public seed of A
-	K      []byte  // 32-byte signing PRF key
-	Tr     []byte  // 64-byte hash of the serialized public key
-	S1     []int8  // N x L matrix (flattened, row-major), entries in [-Eta, Eta]
-	S2     []int8  // M x L matrix (flattened, row-major), entries in [-Eta, Eta]
-	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
+	Params        SignParams
+	Lattice       LatticeSignSecretKey
+	MQ            MQSecretKey
+	Hash          HashSignSecretKey
+	Seed          []byte
+	PublicKeyHash []byte // 64-byte hash of the serialized composite public key
 }
 
-// MOSAICSignKeyPair contains both public and secret keys for signatures.
+// MOSAICSignKeyPair contains both composite signature keys.
 type MOSAICSignKeyPair struct {
 	PublicKey MOSAICSignPublicKey
 	SecretKey MOSAICSignSecretKey
 }
 
-// MOSAICSignature is a signature: the challenge hash c̃ and the response z.
+// MOSAICSignature is the composite signature: all three component signatures
+// on the same bound digest. Verification requires all three to be valid.
 type MOSAICSignature struct {
-	Challenge []byte  // c̃ = H(μ || HighBits(A·y)), CTildeSize bytes
-	Z         []int32 // z = y + S1·c, N entries with ||z||∞ < Gamma1 - Beta
-}
-
-// =============================================================================
-// Analysis Types
-// =============================================================================
-
-// SecurityAnalysis provides security estimates for a public key.
-type SecurityAnalysis struct {
-	SLSS struct {
-		Dimension         int
-		Sparsity          int
-		EstimatedSecurity int
-	}
-	TDD struct {
-		TensorDim         int
-		Rank              int
-		EstimatedSecurity int
-	}
-	EGRW struct {
-		GraphSize         int
-		WalkLength        int
-		EstimatedSecurity int
-	}
-	Combined struct {
-		EstimatedSecurity int
-		QuantumSecurity   int
-	}
+	Lattice LatticeSignature
+	MQ      MQSignature
+	Hash    HashSignature
 }

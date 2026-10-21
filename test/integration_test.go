@@ -89,10 +89,10 @@ func TestKEMSerialization(t *testing.T) {
 			}
 
 			// Serialize ciphertext
-			ctBytes := kem.SerializeCiphertext(&result.Ciphertext)
+			ctBytes := kem.SerializeCiphertext(&result.Ciphertext, kp.PublicKey.Params)
 
 			// Deserialize ciphertext
-			ct2, err := kem.DeserializeCiphertext(ctBytes)
+			ct2, err := kem.DeserializeCiphertext(ctBytes, kp.PublicKey.Params)
 			if err != nil {
 				t.Fatalf("DeserializeCiphertext failed: %v", err)
 			}
@@ -669,7 +669,8 @@ func TestSecurityValidation_SignatureConstantTime(t *testing.T) {
 
 	// Modified signature should not verify
 	modSig := *sig
-	modSig.Challenge[0] ^= 0xFF
+	modSig.Lattice.Challenge = append([]byte{}, sig.Lattice.Challenge...)
+	modSig.Lattice.Challenge[0] ^= 0xFF
 	validMod := sign.Verify(&kp.PublicKey, message, &modSig)
 	if validMod {
 		t.Error("Modified signature passed verification")
@@ -733,20 +734,13 @@ func TestSecurityValidation_SecretKeyIntegrity(t *testing.T) {
 		t.Error("SLSS.S is empty")
 	}
 
-	// Verify TDD factors
-	if len(sk.TDD.Factors.A) == 0 {
-		t.Error("TDD.Factors.A is empty")
+	// Verify code component
+	if len(sk.Code.X) == 0 || len(sk.Code.Y) == 0 {
+		t.Error("code secret key is empty")
 	}
 
-	// Verify EGRW component
-	if len(sk.EGRW.Walk) == 0 {
-		t.Error("EGRW.Walk is empty")
-	}
-
-	t.Logf("Secret key integrity verified: Seed=%d, Hash=%d, SLSS=%d, TDD=(A=%d,B=%d,C=%d), EGRW=%d",
-		len(sk.Seed), len(sk.PublicKeyHash), len(sk.SLSS.S),
-		len(sk.TDD.Factors.A), len(sk.TDD.Factors.B), len(sk.TDD.Factors.C),
-		len(sk.EGRW.Walk))
+	t.Logf("Secret key integrity verified: Seed=%d, Hash=%d, SLSS=%d, Code=(x=%d words,y=%d words)",
+		len(sk.Seed), len(sk.PublicKeyHash), len(sk.SLSS.S), len(sk.Code.X), len(sk.Code.Y))
 }
 
 // BenchmarkMessageValidationOverhead benchmarks the cost of message validation

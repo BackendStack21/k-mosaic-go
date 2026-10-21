@@ -8,17 +8,31 @@ import (
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
 )
 
-// Modulus of the signature scheme (same as CRYSTALS-Dilithium: 2^23 - 2^13 + 1).
-const SignQ = 8380417
+// LatticeSignQ is the modulus of the lattice signature component (2^23 - 2^13 + 1).
+const LatticeSignQ = 8380417
 
-// MOS128Params is the parameter set for the MOS-128 level.
+// CodeHQC256 is the quasi-cyclic syndrome-decoding parameter set, identical
+// to NIST's hqc-256 (level 5): ring length 57637, Reed-Solomon [90,32] with
+// correction capability 29, Reed-Muller RM(1,7) duplicated 5 times, secret
+// weight 131, ephemeral weights 149. Its decryption failure rate is below
+// 2^-256 per the HQC specification. It encodes exactly 32 bytes, the size of
+// a KEM share, which is why it is used at both levels.
+var CodeHQC256 = kmosaic.CodeParams{
+	N:     57637,
+	N1:    90,
+	K:     32,
+	Delta: 29,
+	Mult:  5,
+	W:     131,
+	WR:    149,
+	WE:    149,
+}
+
+// MOS128Params is the KEM parameter set for the MOS-128 level.
 //
-// SLSS (KEM) parameters were chosen with a core-SVP primal (uSVP) estimate:
-// n = m = 768, q = 12289, σ = 3.19, sparse ternary secrets of weight 192 give
-// roughly 2^160 classical / 2^145 quantum core-SVP for both the key and the
-// ciphertext LWE instances, leaving margin for hybrid attacks on the sparse
-// secret. (The original n=512, m=384, w=64 set estimated at about 2^65
-// classical for the ciphertext instance.)
+// SLSS: n = m = 768, q = 12289, σ = 3.19, sparse ternary secrets of weight 192
+// estimate at roughly 2^160 classical / 2^145 quantum core-SVP (primal uSVP
+// model) for both the key and ciphertext LWE instances.
 var MOS128Params = kmosaic.MOSAICParams{
 	Level: kmosaic.MOS128,
 	SLSS: kmosaic.SLSSParams{
@@ -29,22 +43,13 @@ var MOS128Params = kmosaic.MOSAICParams{
 		Sigma: 3.19,
 		L:     256,
 	},
-	TDD: kmosaic.TDDParams{
-		N:     24,
-		R:     6,
-		Q:     7681,
-		Sigma: 2.0,
-	},
-	EGRW: kmosaic.EGRWParams{
-		P: 1021,
-		K: 128,
-	},
+	Code: CodeHQC256,
 }
 
-// MOS256Params is the parameter set for the MOS-256 level.
+// MOS256Params is the KEM parameter set for the MOS-256 level.
 //
-// n = m = 1152, w = 288 estimate at roughly 2^260 classical / 2^236 quantum
-// core-SVP, comparable to NIST level 5 lattice KEMs.
+// SLSS: n = m = 1152, w = 288 estimate at roughly 2^260 classical / 2^236
+// quantum core-SVP.
 var MOS256Params = kmosaic.MOSAICParams{
 	Level: kmosaic.MOS256,
 	SLSS: kmosaic.SLSSParams{
@@ -55,55 +60,71 @@ var MOS256Params = kmosaic.MOSAICParams{
 		Sigma: 3.19,
 		L:     256,
 	},
-	TDD: kmosaic.TDDParams{
-		N:     36,
-		R:     9,
-		Q:     7681,
-		Sigma: 2.0,
-	},
-	EGRW: kmosaic.EGRWParams{
-		P: 2039,
-		K: 256,
-	},
+	Code: CodeHQC256,
 }
 
-// Sign128Params is the signature parameter set for MOS-128.
-//
-// It transplants the ML-DSA-65 (Dilithium3, NIST level 3) parameters to
-// unstructured matrices: A is 1536 x 1280 over Z_q, secrets have entries in
-// [-4, 4], the challenge has 49 non-zero entries among 256. The module
-// structure of Dilithium plays no role in the published core-SVP estimates
-// (about 2^182 classical / 2^165 quantum for LWE, 2^174 / 2^158 for SIS), so
-// those estimates carry over.
-var Sign128Params = kmosaic.SignParams{
+// Lattice128Params transplants the ML-DSA-65 (Dilithium3, NIST level 3)
+// parameters to unstructured matrices: A is 1536 x 1280 over Z_q, secrets
+// have entries in [-4, 4], the challenge has 49 non-zero entries among 256.
+// Module structure plays no role in the published core-SVP estimates
+// (about 2^182 classical / 2^165 quantum for LWE, 2^174 / 2^158 for SIS).
+var Lattice128Params = kmosaic.LatticeSignParams{
 	N:          1280,
 	M:          1536,
 	L:          256,
-	Q:          SignQ,
+	Q:          LatticeSignQ,
 	Eta:        4,
 	Tau:        49,
 	Gamma1:     1 << 19,
-	Gamma2:     (SignQ - 1) / 32,
+	Gamma2:     (LatticeSignQ - 1) / 32,
 	Beta:       49 * 4,
 	CTildeSize: 48,
 }
 
-// Sign256Params is the signature parameter set for MOS-256.
-//
-// It transplants the ML-DSA-87 (Dilithium5, NIST level 5) parameters:
-// A is 2048 x 1792, secrets in [-2, 2], 60 non-zero challenge entries
-// (about 2^252 classical / 2^229 quantum core-SVP).
-var Sign256Params = kmosaic.SignParams{
+// Lattice256Params transplants the ML-DSA-87 (Dilithium5, NIST level 5)
+// parameters: A is 2048 x 1792, secrets in [-2, 2], 60 non-zero challenge
+// entries (about 2^252 classical / 2^229 quantum core-SVP).
+var Lattice256Params = kmosaic.LatticeSignParams{
 	N:          1792,
 	M:          2048,
 	L:          256,
-	Q:          SignQ,
+	Q:          LatticeSignQ,
 	Eta:        2,
 	Tau:        60,
 	Gamma1:     1 << 19,
-	Gamma2:     (SignQ - 1) / 32,
+	Gamma2:     (LatticeSignQ - 1) / 32,
 	Beta:       60 * 2,
 	CTildeSize: 64,
+}
+
+// MQ128Params is the uov-Ip parameter set (NIST level 1): 112 variables,
+// 44 equations over F_256.
+var MQ128Params = kmosaic.MQParams{N: 112, M: 44}
+
+// MQ256Params is the uov-V parameter set (NIST level 5): 244 variables,
+// 96 equations over F_256.
+var MQ256Params = kmosaic.MQParams{N: 244, M: 96}
+
+// Hash128Params is SLH-DSA-SHAKE-128f (FIPS 205, NIST level 1).
+var Hash128Params = kmosaic.HashSignParams{N: 16, H: 66, D: 22, A: 6, K: 33, LgW: 4, M: 34}
+
+// Hash256Params is SLH-DSA-SHAKE-256f (FIPS 205, NIST level 5).
+var Hash256Params = kmosaic.HashSignParams{N: 32, H: 68, D: 17, A: 9, K: 35, LgW: 4, M: 49}
+
+// Sign128Params is the composite signature parameter set for MOS-128.
+var Sign128Params = kmosaic.SignParams{
+	Level:   kmosaic.MOS128,
+	Lattice: Lattice128Params,
+	MQ:      MQ128Params,
+	Hash:    Hash128Params,
+}
+
+// Sign256Params is the composite signature parameter set for MOS-256.
+var Sign256Params = kmosaic.SignParams{
+	Level:   kmosaic.MOS256,
+	Lattice: Lattice256Params,
+	MQ:      MQ256Params,
+	Hash:    Hash256Params,
 }
 
 // GetParams returns the KEM parameter set for the given security level.
@@ -118,7 +139,7 @@ func GetParams(level kmosaic.SecurityLevel) (kmosaic.MOSAICParams, error) {
 	}
 }
 
-// GetSignParams returns the signature parameter set for the given security level.
+// GetSignParams returns the composite signature parameter set for the given level.
 func GetSignParams(level kmosaic.SecurityLevel) (kmosaic.SignParams, error) {
 	switch level {
 	case kmosaic.MOS128:
@@ -130,16 +151,28 @@ func GetSignParams(level kmosaic.SecurityLevel) (kmosaic.SignParams, error) {
 	}
 }
 
-// SignLevelFromParams returns the security level whose signature parameter
-// set equals params, or an error if it matches none.
-func SignLevelFromParams(params kmosaic.SignParams) (kmosaic.SecurityLevel, error) {
+// GetLatticeSignParams returns the lattice signature parameter set for the given level.
+func GetLatticeSignParams(level kmosaic.SecurityLevel) (kmosaic.LatticeSignParams, error) {
+	switch level {
+	case kmosaic.MOS128:
+		return Lattice128Params, nil
+	case kmosaic.MOS256:
+		return Lattice256Params, nil
+	default:
+		return kmosaic.LatticeSignParams{}, fmt.Errorf("unknown security level: %s", level)
+	}
+}
+
+// LatticeLevelFromParams returns the security level whose lattice signature
+// parameter set equals params, or an error if it matches none.
+func LatticeLevelFromParams(params kmosaic.LatticeSignParams) (kmosaic.SecurityLevel, error) {
 	switch params {
-	case Sign128Params:
+	case Lattice128Params:
 		return kmosaic.MOS128, nil
-	case Sign256Params:
+	case Lattice256Params:
 		return kmosaic.MOS256, nil
 	default:
-		return "", errors.New("signature parameters do not match a known security level")
+		return "", errors.New("lattice signature parameters do not match a known security level")
 	}
 }
 
@@ -163,28 +196,42 @@ func ValidateParams(params kmosaic.MOSAICParams) error {
 	if params.SLSS.L <= 0 || params.SLSS.L%8 != 0 {
 		return errors.New("SLSS L must be a positive multiple of 8")
 	}
-	if params.TDD.N <= 0 || params.TDD.R <= 0 {
-		return errors.New("TDD dimensions must be positive")
+	if err := ValidateCodeParams(params.Code); err != nil {
+		return err
 	}
-	if params.TDD.R > params.TDD.N {
-		return errors.New("TDD rank cannot exceed dimension")
-	}
-	if !isPrime(params.EGRW.P) {
-		return errors.New("EGRW prime must be prime")
-	}
-	if params.EGRW.K < 64 {
-		return errors.New("EGRW walk length should be at least 64")
+	if params.SLSS.L/8 != params.Code.K {
+		return errors.New("SLSS and code components must encrypt the same message size")
 	}
 	return nil
 }
 
-// ValidateSignParams validates a signature parameter set for consistency.
-func ValidateSignParams(p kmosaic.SignParams) error {
-	if p.N <= 0 || p.M <= 0 || p.L <= 0 {
-		return errors.New("signature dimensions must be positive")
+// ValidateCodeParams validates the code-based component parameters.
+func ValidateCodeParams(p kmosaic.CodeParams) error {
+	if p.N <= 0 || p.N1 <= 0 || p.K <= 0 || p.Delta <= 0 || p.Mult <= 0 {
+		return errors.New("code parameters must be positive")
 	}
-	if p.Q != SignQ {
-		return errors.New("signature modulus must be 8380417")
+	if !isPrime(p.N) {
+		return errors.New("code ring length must be prime")
+	}
+	if p.N1 > 255 || p.K >= p.N1 || p.N1-p.K != 2*p.Delta {
+		return errors.New("Reed-Solomon parameters inconsistent: need N1 <= 255 and N1 - K = 2*Delta")
+	}
+	if p.N1*128*p.Mult > p.N {
+		return errors.New("code: N1*N2 must not exceed N")
+	}
+	if p.W <= 0 || p.WR <= 0 || p.WE <= 0 || p.W > p.N || p.WR > p.N || p.WE > p.N {
+		return errors.New("code weights must be in (0, N]")
+	}
+	return nil
+}
+
+// ValidateLatticeSignParams validates a lattice signature parameter set.
+func ValidateLatticeSignParams(p kmosaic.LatticeSignParams) error {
+	if p.N <= 0 || p.M <= 0 || p.L <= 0 {
+		return errors.New("lattice signature dimensions must be positive")
+	}
+	if p.Q != LatticeSignQ {
+		return errors.New("lattice signature modulus must be 8380417")
 	}
 	if p.Eta <= 0 || p.Tau <= 0 || p.Tau > p.L {
 		return errors.New("invalid eta or tau")
@@ -202,6 +249,49 @@ func ValidateSignParams(p kmosaic.SignParams) error {
 		return errors.New("challenge hash must be at least 32 bytes")
 	}
 	return nil
+}
+
+// ValidateMQParams validates a UOV parameter set.
+func ValidateMQParams(p kmosaic.MQParams) error {
+	if p.M <= 0 || p.N <= 2*p.M {
+		return errors.New("UOV requires 0 < m and n > 2m")
+	}
+	return nil
+}
+
+// ValidateHashSignParams validates an SLH-DSA parameter set.
+func ValidateHashSignParams(p kmosaic.HashSignParams) error {
+	if p.N != 16 && p.N != 24 && p.N != 32 {
+		return errors.New("SLH-DSA n must be 16, 24 or 32")
+	}
+	if p.D <= 0 || p.H <= 0 || p.H%p.D != 0 || p.H/p.D > 32 {
+		return errors.New("SLH-DSA requires d | h with h/d <= 32")
+	}
+	if p.H-p.H/p.D > 64 {
+		return errors.New("SLH-DSA tree index must fit in 64 bits")
+	}
+	if p.A <= 0 || p.A > 32 || p.K <= 0 {
+		return errors.New("SLH-DSA FORS parameters out of range")
+	}
+	if p.LgW != 4 {
+		return errors.New("SLH-DSA lg_w must be 4")
+	}
+	expectedM := (p.K*p.A+7)/8 + (p.H-p.H/p.D+7)/8 + (p.H/p.D+7)/8
+	if p.M != expectedM {
+		return fmt.Errorf("SLH-DSA m must be %d", expectedM)
+	}
+	return nil
+}
+
+// ValidateSignParams validates a composite signature parameter set.
+func ValidateSignParams(p kmosaic.SignParams) error {
+	if err := ValidateLatticeSignParams(p.Lattice); err != nil {
+		return err
+	}
+	if err := ValidateMQParams(p.MQ); err != nil {
+		return err
+	}
+	return ValidateHashSignParams(p.Hash)
 }
 
 // isPrime checks if a number is prime using optimized trial division.

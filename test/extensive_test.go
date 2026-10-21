@@ -244,16 +244,32 @@ func TestSign_Failures(t *testing.T) {
 		t.Error("Verify passed with wrong message")
 	}
 
-	// Test modified signature (deep copies so one mutation cannot mask another)
-	badSig := &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
-	badSig.Challenge[0] ^= 1
-	if sign.Verify(&kp.PublicKey, msg, badSig) {
-		t.Error("Verify passed with modified challenge")
+	// Modify each component in turn (deep copies so one mutation cannot mask another).
+	clone := func() *kmosaic.MOSAICSignature {
+		return &kmosaic.MOSAICSignature{
+			Lattice: kmosaic.LatticeSignature{Challenge: append([]byte{}, sig.Lattice.Challenge...), Z: append([]int32{}, sig.Lattice.Z...)},
+			MQ:      kmosaic.MQSignature{S: append([]byte{}, sig.MQ.S...), Salt: append([]byte{}, sig.MQ.Salt...)},
+			Hash:    kmosaic.HashSignature{Data: append([]byte{}, sig.Hash.Data...)},
+		}
 	}
-
-	badSig = &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
-	badSig.Z[0]++
+	badSig := clone()
+	badSig.Lattice.Challenge[0] ^= 1
 	if sign.Verify(&kp.PublicKey, msg, badSig) {
-		t.Error("Verify passed with modified response")
+		t.Error("Verify passed with modified lattice challenge")
+	}
+	badSig = clone()
+	badSig.Lattice.Z[0]++
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified lattice response")
+	}
+	badSig = clone()
+	badSig.MQ.S[0] ^= 1
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified MQ signature")
+	}
+	badSig = clone()
+	badSig.Hash.Data[100] ^= 1
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified hash signature")
 	}
 }

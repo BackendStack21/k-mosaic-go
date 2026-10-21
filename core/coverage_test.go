@@ -44,32 +44,25 @@ func TestValidateParams_Coverage(t *testing.T) {
 		t.Error("expected error for small SLSS.Sigma")
 	}
 
-	// TDD.N <= 0
+	// code: non-prime ring length
 	p = base
-	p.TDD.N = 0
+	p.Code.N = 57636
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for TDD.N <= 0")
+		t.Error("expected error for non-prime code ring length")
 	}
 
-	// TDD.R > TDD.N
+	// code: Reed-Solomon parameters inconsistent
 	p = base
-	p.TDD.R = p.TDD.N + 1
+	p.Code.Delta = 10
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for TDD.R > TDD.N")
+		t.Error("expected error for inconsistent Reed-Solomon parameters")
 	}
 
-	// !isPrime(EGRW.P)
+	// code: N1*N2 exceeds N
 	p = base
-	p.EGRW.P = 4
+	p.Code.Mult = 6
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for non-prime EGRW.P")
-	}
-
-	// EGRW.K < 64
-	p = base
-	p.EGRW.K = 63
-	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for small EGRW.K")
+		t.Error("expected error for code longer than ring")
 	}
 
 	// Unknown security level

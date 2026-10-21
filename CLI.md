@@ -3,8 +3,9 @@
 The `k-mosaic-cli` is a command-line interface for the kMOSAIC post-quantum cryptographic library. It provides terminal-based access to key encapsulation, encryption/decryption, and digital signature operations.
 
 > **Warning:** kMOSAIC is experimental and unreviewed. Key files produced by
-> versions before 2.0.0 are insecure and no longer readable; see
-> [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
+> versions before 3.0.0 are not readable by this version (and those before
+> 2.0.0 are insecure); see [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
+> Expect key files of 0.4–2 MB: the schemes are unstructured on purpose.
 
 ## TL;DR
 

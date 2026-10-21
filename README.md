@@ -13,38 +13,58 @@ A Go implementation of the kMOSAIC post-quantum cryptographic library.
 
 ## ⚠️ Security Warning
 
-**kMOSAIC is an experimental cryptographic construction that has NOT been reviewed by anyone outside this repository. DO NOT use in production systems protecting sensitive data.**
+**kMOSAIC is an experimental library that has not been reviewed by anyone
+outside this repository. DO NOT use in production systems protecting sensitive
+data.**
 
-**Versions before 2.0.0 (and the TypeScript implementation) are broken:** the
-KEM shared secret could be recovered from the public key and ciphertext alone,
-and signatures could be forged by anyone holding the public key. See
-[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the reproduced attacks,
-a claim-by-claim review of the original design, and what 2.0.0 changes.
-Keys, ciphertexts and signatures from earlier versions must be discarded.
+Versions before 2.0.0 (and the TypeScript implementation) are broken: the KEM
+shared secret could be recovered from the public key and ciphertext alone, and
+signatures could be forged by anyone holding the public key. See
+[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the reproduced attacks, a
+claim-by-claim review of the original design, and how 3.0.0 implements the
+original claims with problems that are actually hard. Keys, ciphertexts and
+signatures from earlier versions must be discarded.
 
 ## Overview
 
-kMOSAIC 2.x is built on unstructured lattice assumptions:
+kMOSAIC 3.x composes independent post-quantum hard problems so that breaking a
+primitive requires breaking **every** problem it is built from. The components
+are standard constructions, instantiated here without algebraic structure
+where the construction allows it, and combined so that the composite is at
+least as strong as its strongest component.
 
-- **KEM / encryption**: plain LWE with sparse ternary secrets (the "SLSS"
-  component), one secret column per message bit, with a Fujisaki-Okamoto
-  transform for CCA security.
-- **Signatures**: the CRYSTALS-Dilithium / FIPS 204 construction over
-  unstructured matrices, with ML-DSA-65 and ML-DSA-87 parameter shapes.
+| Primitive  | Component                                   | Hard problem                                   |
+| ---------- | ------------------------------------------- | ---------------------------------------------- |
+| KEM        | SLSS: plain LWE with sparse ternary secrets | Learning With Errors (unstructured lattices)   |
+| KEM        | QCSD: the HQC public-key encryption scheme  | Quasi-cyclic syndrome decoding (codes)         |
+| Signatures | latsig: ML-DSA over unstructured matrices   | Module-free SIS / LWE (lattices)               |
+| Signatures | uov: Unbalanced Oil and Vinegar over F_256  | Multivariate quadratic equations (MQ)          |
+| Signatures | slhdsa: SLH-DSA / SPHINCS+ with SHAKE256    | Hash-function (second-)preimage resistance     |
 
-The original design advertised two further "hard problems", TDD (tensor
-decomposition) and EGRW (expander-graph walks). Neither contributes any
-security: their component ciphertexts are decryptable without the secret key
-and the EGRW group is small enough to search exhaustively. They remain in the
-KEM ciphertext layout only for continuity and are documented as such.
+- **KEM**: a 32-byte ephemeral secret is split into two XOR shares, one
+  encrypted by each component. The ephemeral secret stays hidden as long as
+  *either* LWE or syndrome decoding is hard. A Fujisaki-Okamoto transform
+  (derandomization, re-encryption check, implicit rejection) gives IND-CCA
+  security in the random-oracle model. The hybrid `Encrypt`/`Decrypt` API
+  wraps the KEM with AES-256-GCM.
+- **Signatures**: the message is hashed together with the composite public
+  key, and the digest is signed by all three components. A signature verifies
+  only if all three component signatures verify, so a forger must break
+  lattices, MQ **and** hash functions. Public keys carry a binding hash of
+  their components, and the digest includes the public-key hash, so
+  components cannot be mixed across key pairs.
+
+There is no third practical post-quantum *encryption* family (isogenies are
+too slow and contested, multivariate encryption is broken), which is why the
+KEM composes two problems and the signature three.
 
 ## Features
 
-- **Key Encapsulation Mechanism (KEM)**: LWE-based key exchange with implicit rejection
-- **Encryption/Decryption**: Hybrid encryption using KEM and AES-256-GCM
-- **Digital Signatures**: Fiat-Shamir-with-aborts lattice signatures
-- **Parallel Execution**: Uses Go goroutines for matrix operations
-- **Two Security Levels**: MOS_128 and MOS_256 (see "Security Levels" for what they mean)
+- **Key Encapsulation Mechanism (KEM)**: LWE + code-based combiner with implicit rejection
+- **Encryption/Decryption**: Hybrid encryption using the KEM and AES-256-GCM
+- **Digital Signatures**: lattice + multivariate + hash-based combiner
+- **Parallel Execution**: Components run concurrently with Go goroutines
+- **Two Parameter Sets**: MOS_128 and MOS_256 (see "Security Levels")
 
 ## Installation
 
@@ -113,27 +133,28 @@ func main() {
 }
 ```
 
-## Performance and sizes (2.0.0, 4-core x86-64 container)
+## Performance and sizes (3.0.0, 4-core x86-64 container)
 
 | Operation       | MOS_128 | MOS_256 |
 | --------------- | ------- | ------- |
-| KEM KeyGen      | 36 ms   | 81 ms   |
-| KEM Encapsulate | 0.4 ms  | 0.8 ms  |
-| KEM Decapsulate | 0.8 ms  | 1.1 ms  |
-| Sign KeyGen     | 197 ms  | 221 ms  |
-| Sign            | 14 ms   | 27 ms   |
-| Verify          | 9 ms    | 10 ms   |
+| KEM KeyGen      | 50 ms   | 95 ms   |
+| KEM Encapsulate | 1 ms    | 2 ms    |
+| KEM Decapsulate | 2 ms    | 3 ms    |
+| Sign KeyGen     | 200 ms  | 470 ms  |
+| Sign            | 70 ms   | 160 ms  |
+| Verify          | 20 ms   | 30 ms   |
 
 | Object               | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
-| KEM public key       | 449 KB  | 777 KB  |
-| KEM ciphertext       | 6.9 KB  | 11.3 KB |
-| Signature public key | 1.18 MB | 1.57 MB |
-| Signature            | 3.9 KB  | 5.4 KB  |
+| KEM public key       | 401 KB  | 597 KB  |
+| KEM ciphertext       | 18.8 KB | 20.3 KB |
+| Signature public key | 1.22 MB | 2.02 MB |
+| Signature            | 21.1 KB | 55.6 KB |
 
-Keys are large because the schemes are unstructured (no polynomial rings).
-The figures in [BenchmarkReport.md](BenchmarkReport.md) describe the broken
-1.x design and are kept for the record only.
+Keys are large because the lattice components are unstructured (no polynomial
+rings) and the signature carries three component signatures. The figures in
+[BenchmarkReport.md](BenchmarkReport.md) describe the broken 1.x design and
+are kept for the record only.
 
 ## API Reference
 
@@ -175,14 +196,17 @@ valid := sign.Verify(&publicKey, message, signature)
 
 ## Security Levels
 
-The names are historical. Estimated strength under a core-SVP model (see
-SECURITY_ASSESSMENT.md §1.4 and §3 for the model and its limits):
+The names are historical. Each composite is at least as strong as its
+strongest component, since every component must be broken.
 
-- **MOS_128**: KEM ≈ 2^146 quantum core-SVP (n = m = 768 LWE); signatures use the ML-DSA-65 shape (≈ 2^165).
-- **MOS_256**: KEM ≈ 2^236 quantum core-SVP (n = m = 1152 LWE); signatures use the ML-DSA-87 shape (≈ 2^229).
+| Level   | SLSS (LWE)                 | QCSD (code)            | latsig            | uov               | slhdsa            |
+| ------- | -------------------------- | ---------------------- | ----------------- | ----------------- | ----------------- |
+| MOS_128 | n = m = 768, ≈2^146 quantum core-SVP | hqc-256 (NIST level 5) | ML-DSA-65 shape (level 3) | uov-Ip (level 1)  | SLH-DSA-128f (level 1) |
+| MOS_256 | n = m = 1152, ≈2^236 quantum core-SVP | hqc-256 (NIST level 5) | ML-DSA-87 shape (level 5) | uov-V (level 5)   | SLH-DSA-256f (level 5) |
 
-These are estimates from this repository's own review, not from an external
-analysis, and hybrid attacks on the sparse secret were not modelled.
+The SLSS estimates come from this repository's own core-SVP model and do not
+account for hybrid attacks on the sparse secret; the other figures are the
+published security levels of the parameter sets the components reuse.
 
 ## Requirements
 

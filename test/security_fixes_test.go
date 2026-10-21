@@ -56,7 +56,8 @@ func TestSignSignPanicRecovery(t *testing.T) {
 		t.Fatalf("Sign returned nil signature")
 	}
 	p := kp.PublicKey.Params
-	if len(sig.Challenge) != p.CTildeSize || len(sig.Z) != p.N {
+	if len(sig.Lattice.Challenge) != p.Lattice.CTildeSize || len(sig.Lattice.Z) != p.Lattice.N ||
+		len(sig.MQ.S) != p.MQ.N || len(sig.Hash.Data) == 0 {
 		t.Errorf("Signature components have incorrect length")
 	}
 }

@@ -1,4 +1,4 @@
-package sign
+package latsig
 
 import (
 	"encoding/binary"

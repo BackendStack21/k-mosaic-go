@@ -121,17 +121,14 @@ func SecretShareDeterministic(secret []byte, n int, seed []byte) ([][]byte, erro
 	return shares, nil
 }
 
-// ComputeBinding computes the cross-component binding hash.
-// It binds the public keys of the three components (SLSS, TDD, EGRW) together.
-// Uses three-layer binding with per-component domain separation for defense-in-depth.
-func ComputeBinding(slssBytes, tddBytes, egrwBytes []byte) []byte {
-	// Three-layer binding with domain separation
-	slssHash := utils.HashWithDomain(DomainBind+"-slss", slssBytes)
-	tddHash := utils.HashWithDomain(DomainBind+"-tdd", tddBytes)
-	egrwHash := utils.HashWithDomain(DomainBind+"-egrw", egrwBytes)
-
-	// Final binding combines all three
-	return utils.HashWithDomain(DomainBind+"-final", utils.HashConcat(slssHash, tddHash, egrwHash))
+// ComputeBinding computes the cross-component binding hash of the serialized
+// component public keys, with per-position domain separation.
+func ComputeBinding(components ...[]byte) []byte {
+	hashes := make([][]byte, len(components))
+	for i, c := range components {
+		hashes[i] = utils.HashWithDomain(DomainBind+"-"+strconv.Itoa(i), c)
+	}
+	return utils.HashWithDomain(DomainBind+"-final", utils.HashConcat(hashes...))
 }
 
 // BindingCommitment represents a commitment with its opening.
@@ -180,12 +177,15 @@ type NIZKProof struct {
 	Challenge   []byte
 }
 
-// GenerateNIZKProof generates a Non-Interactive Zero-Knowledge proof of correct construction.
-// In this simplified implementation, it acts as a binding of all inputs.
-// A full implementation would use a Sigma protocol with Fiat-Shamir transform.
+// GenerateNIZKProof generates the share-binding proof carried in a ciphertext.
+//
+// It is a hash commitment to every share, keyed to the hash of the component
+// ciphertext that carries it and to the ephemeral secret. It is deterministic
+// in the ephemeral secret, so the Fujisaki-Okamoto re-encryption check covers
+// it; it is not a zero-knowledge proof and adds no security on its own.
 func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte, seed []byte) []byte {
-	// Structured NIZK (Fiat-Shamir) proof generation
-	if len(shares) != 3 || len(ciphertextHashes) != 3 {
+	n := len(shares)
+	if n < 2 || len(ciphertextHashes) != n {
 		return nil
 	}
 
@@ -197,9 +197,9 @@ func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte
 		}
 	}
 
-	commitments := make([][]byte, 3)
-	commitRandomness := make([][]byte, 3)
-	for i := 0; i < 3; i++ {
+	commitments := make([][]byte, n)
+	commitRandomness := make([][]byte, n)
+	for i := 0; i < n; i++ {
 		domain := DomainNIZK + "-commit-" + strconv.Itoa(i)
 		domainHash := utils.HashWithDomain(domain, seed)
 
@@ -213,12 +213,12 @@ func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte
 
 	secretMsg := utils.HashWithDomain(DomainNIZK+"-msg", secret)
 
-	challengeInput := utils.HashConcat(secretMsg, commitments[0], commitments[1], commitments[2], ciphertextHashes[0], ciphertextHashes[1], ciphertextHashes[2])
+	challengeInput := utils.HashConcat(append(append([][]byte{secretMsg}, commitments...), ciphertextHashes...)...)
 
 	challenge := utils.SHA3256(challengeInput)
 
-	responses := make([][]byte, 3)
-	for i := 0; i < 3; i++ {
+	responses := make([][]byte, n)
+	for i := 0; i < n; i++ {
 		domain := DomainNIZK + "-mask-" + strconv.Itoa(i)
 		domainHash := utils.HashWithDomain(domain, challenge)
 
@@ -234,7 +234,7 @@ func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte
 		responses[i] = resp
 	}
 
-	parts := [][]byte{challenge, commitments[0], commitments[1], commitments[2], responses[0], responses[1], responses[2]}
+	parts := append(append([][]byte{challenge}, commitments...), responses...)
 
 	buf := &bytes.Buffer{}
 	_ = binary.Write(buf, binary.LittleEndian, uint32(len(parts)))
@@ -247,11 +247,11 @@ func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte
 	return result
 }
 
-// VerifyNIZKProof verifies a NIZK proof.
-// It verifies the proof is correctly bound to the ciphertext hashes and binding.
+// VerifyNIZKProof verifies a share-binding proof against the component
+// ciphertext hashes and the recovered ephemeral secret.
 func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bool {
-	// Validate ciphertext hashes first before accessing
-	if len(ciphertextHashes) != 3 {
+	n := len(ciphertextHashes)
+	if n < 2 {
 		return false
 	}
 
@@ -261,16 +261,6 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bo
 		}
 	}
 
-	// Legacy compact proof (32 bytes): accept if non-zero
-	if len(proof) == 32 {
-		for _, b := range proof {
-			if b != 0 {
-				return true
-			}
-		}
-		return false
-	}
-
 	// Structured proof parsing
 	if len(proof) < 4 {
 		return false
@@ -278,7 +268,7 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bo
 	off := 0
 	numParts := int(binary.LittleEndian.Uint32(proof[off:]))
 	off += 4
-	if numParts != 7 {
+	if numParts != 1+2*n {
 		return false
 	}
 	parts := make([][]byte, numParts)
@@ -311,13 +301,13 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bo
 		return false
 	}
 
-	commitments := parts[1:4]
-	responses := parts[4:7]
+	commitments := parts[1 : 1+n]
+	responses := parts[1+n : 1+2*n]
 
 	// Recompute challenge
 	secretMsg := utils.HashWithDomain(DomainNIZK+"-msg", message)
 
-	expectedChallengeInput := utils.HashConcat(secretMsg, commitments[0], commitments[1], commitments[2], ciphertextHashes[0], ciphertextHashes[1], ciphertextHashes[2])
+	expectedChallengeInput := utils.HashConcat(append(append([][]byte{secretMsg}, commitments...), ciphertextHashes...)...)
 
 	expectedChallenge := utils.SHA3256(expectedChallengeInput)
 
@@ -326,7 +316,7 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bo
 	}
 
 	// Verify each response
-	for i := 0; i < 3; i++ {
+	for i := 0; i < n; i++ {
 		resp := responses[i]
 		if len(resp) < 32 {
 			return false

@@ -8,9 +8,8 @@ import (
 	"github.com/BackendStack21/k-mosaic-go/core"
 	"github.com/BackendStack21/k-mosaic-go/entanglement"
 	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/problems/egrw"
+	"github.com/BackendStack21/k-mosaic-go/problems/qcsd"
 	"github.com/BackendStack21/k-mosaic-go/problems/slss"
-	"github.com/BackendStack21/k-mosaic-go/problems/tdd"
 	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
@@ -93,32 +92,23 @@ func TestKEMEncapsulateDecapsulate(t *testing.T) {
 	// Decrypt and reconstruct
 	params := kp.PublicKey.Params
 
-	// Decrypt shares manually
+	// Decrypt shares manually with each component's secret key
 	m1 := slss.Decrypt(&result.Ciphertext.C1, kp.SecretKey.SLSS, params.SLSS)
-	m2 := tdd.Decrypt(&result.Ciphertext.C2, kp.SecretKey.TDD, kp.PublicKey.TDD, params.TDD)
-	m3 := egrw.Decrypt(&result.Ciphertext.C3, kp.SecretKey.EGRW, kp.PublicKey.EGRW, params.EGRW)
+	m2 := qcsd.Decrypt(&result.Ciphertext.C2, kp.SecretKey.Code, params.Code)
 
-	t.Logf("Decrypted m1: %x", m1)
-	t.Logf("Decrypted m2: %x", m2)
-	t.Logf("Decrypted m3: %x", m3)
-
-	// Check that we got the expected shares
 	randomness := utils.HashConcat(ephemeralSecret, kp.PublicKey.Binding)
-	expectedShares, _ := entanglement.SecretShareDeterministic(ephemeralSecret, 3, randomness)
+	expectedShares, _ := entanglement.SecretShareDeterministic(ephemeralSecret, 2, randomness)
+	if !bytes.Equal(m1, expectedShares[0]) || !bytes.Equal(m2, expectedShares[1]) {
+		t.Fatalf("component decryptions do not match the shares")
+	}
 
-	t.Logf("Expected share0: %x", expectedShares[0])
-	t.Logf("Expected share1: %x", expectedShares[1])
-	t.Logf("Expected share2: %x", expectedShares[2])
-
-	// Reconstruct
-	shares := [][]byte{m1, m2, m3}
-	reconstructed, err := entanglement.SecretReconstruct(shares)
+	reconstructed, err := entanglement.SecretReconstruct([][]byte{m1, m2})
 	if err != nil {
 		t.Fatalf("SecretReconstruct failed: %v", err)
 	}
-
-	t.Logf("Original ephemeral:     %x", ephemeralSecret)
-	t.Logf("Reconstructed ephemeral: %x", reconstructed)
+	if !bytes.Equal(reconstructed, ephemeralSecret) {
+		t.Fatalf("reconstructed ephemeral secret mismatch")
+	}
 
 	// Now test decapsulate
 	sharedSecret, err := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &result.Ciphertext)

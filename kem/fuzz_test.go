@@ -2,6 +2,9 @@ package kem
 
 import (
 	"testing"
+
+	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/core"
 )
 
 // FuzzDeserializePublicKey tests public key deserialization with random inputs
@@ -46,8 +49,9 @@ func FuzzDeserializeCiphertext(f *testing.F) {
 	f.Add(make([]byte, 16))
 	f.Add(make([]byte, 100))
 
+	params, _ := core.GetParams(kmosaic.MOS_128)
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Should not panic, may return error
-		_, _ = DeserializeCiphertext(data)
+		_, _ = DeserializeCiphertext(data, params)
 	})
 }
