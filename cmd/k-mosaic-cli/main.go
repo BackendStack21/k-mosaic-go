@@ -1685,16 +1685,47 @@ func encodeBytes(data []byte, format OutputFormat) string {
 	}
 }
 
+// decodeString decodes a value written by encodeBytes, accepting either hex
+// or base64.
+//
+// Hex is tried first whenever the string looks like hex (even length, only
+// hex digits). Every hex digit is also a valid base64 character, so a hex
+// string whose length is a multiple of four would otherwise be silently
+// "decoded" as base64 into garbage and the key or ciphertext would then fail
+// to parse. A base64 string consisting purely of hex digits is astronomically
+// unlikely for the key, ciphertext and signature sizes this CLI produces.
 func decodeString(s string) ([]byte, error) {
-	// Try base64 first
+	s = strings.TrimSpace(s)
+	if looksLikeHex(s) {
+		if data, err := hex.DecodeString(s); err == nil {
+			return data, nil
+		}
+	}
 	if data, err := base64.StdEncoding.DecodeString(s); err == nil {
 		return data, nil
 	}
-	// Try hex
 	if data, err := hex.DecodeString(s); err == nil {
 		return data, nil
 	}
 	return nil, fmt.Errorf("unable to decode string")
+}
+
+// looksLikeHex reports whether s is a non-empty, even-length string made only
+// of hexadecimal digits.
+func looksLikeHex(s string) bool {
+	if len(s) == 0 || len(s)%2 != 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isDigit := c >= '0' && c <= '9'
+		isLower := c >= 'a' && c <= 'f'
+		isUpper := c >= 'A' && c <= 'F'
+		if !isDigit && !isLower && !isUpper {
+			return false
+		}
+	}
+	return true
 }
 
 // loadSecretKeyFromFile loads a secret key from a file, handling both JSON and binary formats
@@ -1830,16 +1861,8 @@ func loadKeyFromFile(filename, keyField string) ([]byte, error) {
 		}
 	}
 
-	// Try raw encoding
-	trimmed := strings.TrimSpace(string(data))
-
-	// Try base64
-	if decoded, err := base64.StdEncoding.DecodeString(trimmed); err == nil {
-		return decoded, nil
-	}
-
-	// Try hex
-	if decoded, err := hex.DecodeString(trimmed); err == nil {
+	// Try raw encoding (hex or base64)
+	if decoded, err := decodeString(string(data)); err == nil {
 		return decoded, nil
 	}
 

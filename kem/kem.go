@@ -26,6 +26,10 @@ const (
 	DomainEncKey         = "kmosaic-enc-key-v1"
 	DomainNonce          = "kmosaic-nonce-v1"
 	DomainImplicitReject = "kmosaic-kem-reject-v1"
+
+	// shareSize is the length in bytes of the ephemeral secret and of each
+	// of the three secret shares encrypted by the component schemes.
+	shareSize = 32
 )
 
 // GenerateKeyPair generates a kMOSAIC key pair.
@@ -236,6 +240,14 @@ func EncapsulateDeterministic(pk *kmosaic.MOSAICPublicKey, ephemeralSecret []byt
 func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *kmosaic.MOSAICCiphertext) ([]byte, error) {
 	params := pk.Params
 
+	// A ciphertext whose components do not have the shape this key's
+	// parameters produce can never pass re-encryption. Reject it implicitly
+	// up front instead of handing malformed vectors to the component
+	// decryptors (which would index out of bounds).
+	if !ciphertextShapeValid(ct, params) {
+		return implicitReject(sk, ct), nil
+	}
+
 	// Decrypt shares in parallel
 	var wg sync.WaitGroup
 	var m1, m2, m3 []byte
@@ -302,6 +314,21 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 	utils.Zeroize(correctSecret)
 
 	return result, nil
+}
+
+// ciphertextShapeValid reports whether every component of ct has the
+// dimensions that encapsulation under params produces.
+func ciphertextShapeValid(ct *kmosaic.MOSAICCiphertext, params kmosaic.MOSAICParams) bool {
+	if len(ct.C1.U) != params.SLSS.N || len(ct.C1.V) != shareSize*8 {
+		return false
+	}
+	if len(ct.C2.Data) != params.TDD.N*params.TDD.N+tdd.EncryptedMessageWords {
+		return false
+	}
+	if len(ct.C3.Commitment) != shareSize {
+		return false
+	}
+	return true
 }
 
 // implicitReject returns a deterministic but unpredictable rejection value.
@@ -577,6 +604,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	pk.Params = params
 
 	// Read SLSS public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: missing SLSS length")
+	}
 	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+slssLen > len(data) {
@@ -590,6 +620,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	offset += slssLen
 
 	// Read TDD public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: missing TDD length")
+	}
 	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+tddLen > len(data) {
@@ -603,6 +636,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	offset += tddLen
 
 	// Read EGRW public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: missing EGRW length")
+	}
 	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+egrwLen > len(data) {
@@ -798,6 +834,9 @@ func DeserializeCiphertext(data []byte) (*kmosaic.MOSAICCiphertext, error) {
 	offset += c1Len
 
 	// Read C2 (TDD ciphertext)
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid ciphertext: missing C2 length")
+	}
 	c2Len := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+c2Len > len(data) {
@@ -811,6 +850,9 @@ func DeserializeCiphertext(data []byte) (*kmosaic.MOSAICCiphertext, error) {
 	offset += c2Len
 
 	// Read C3 (EGRW ciphertext)
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid ciphertext: missing C3 length")
+	}
 	c3Len := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if offset+c3Len > len(data) {

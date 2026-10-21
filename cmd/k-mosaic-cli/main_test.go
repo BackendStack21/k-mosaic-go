@@ -814,3 +814,61 @@ func TestKEMDecapsulateAlias(t *testing.T) {
 		t.Fatalf("unable to parse decapsulate output as json: %v, out: %s", err, decapOut)
 	}
 }
+
+// TestOutputFormatHexRoundTrip verifies that artifacts written with --format hex
+// can be read back by the CLI. Hex strings whose length is a multiple of four
+// are also syntactically valid base64, and the loader used to decode them as
+// base64 first, producing garbage that failed to parse.
+func TestOutputFormatHexRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	kpFile := filepath.Join(dir, "kp.json")
+	encapFile := filepath.Join(dir, "encap.json")
+	decapFile := filepath.Join(dir, "decap.json")
+
+	if _, out, err := runCLI(t, 30*time.Second, "kem", "keygen", "--level", "128", "--format", "hex", "--output", kpFile); err != nil {
+		t.Fatalf("kem keygen failed: %v, out: %s", err, out)
+	}
+	if _, out, err := runCLI(t, 30*time.Second, "kem", "encapsulate", "--public-key", kpFile, "--format", "hex", "--output", encapFile); err != nil {
+		t.Fatalf("kem encapsulate failed: %v, out: %s", err, out)
+	}
+	if _, out, err := runCLI(t, 30*time.Second, "kem", "decapsulate", "--secret-key", kpFile, "--public-key", kpFile, "--ciphertext", encapFile, "--format", "hex", "--output", decapFile); err != nil {
+		t.Fatalf("kem decapsulate failed: %v, out: %s", err, out)
+	}
+
+	encapData, err := os.ReadFile(encapFile)
+	if err != nil {
+		t.Fatalf("read encap file: %v", err)
+	}
+	decapData, err := os.ReadFile(decapFile)
+	if err != nil {
+		t.Fatalf("read decap file: %v", err)
+	}
+	var encap map[string]string
+	var decap map[string]string
+	if err := json.Unmarshal(encapData, &encap); err != nil {
+		t.Fatalf("parse encap json: %v", err)
+	}
+	if err := json.Unmarshal(decapData, &decap); err != nil {
+		t.Fatalf("parse decap json: %v", err)
+	}
+	if encap["shared_secret"] == "" || encap["shared_secret"] != decap["shared_secret"] {
+		t.Fatalf("shared secret mismatch: encap=%q decap=%q", encap["shared_secret"], decap["shared_secret"])
+	}
+
+	// Signatures written in hex must verify too.
+	signKp := filepath.Join(dir, "sign_kp.json")
+	sigFile := filepath.Join(dir, "sig.json")
+	if _, out, err := runCLI(t, 30*time.Second, "sign", "keygen", "--level", "128", "--format", "hex", "--output", signKp); err != nil {
+		t.Fatalf("sign keygen failed: %v, out: %s", err, out)
+	}
+	if _, out, err := runCLI(t, 30*time.Second, "sign", "sign", "--secret-key", signKp, "--public-key", signKp, "--message", "hex round trip", "--format", "hex", "--output", sigFile); err != nil {
+		t.Fatalf("sign sign failed: %v, out: %s", err, out)
+	}
+	stdout, out, err := runCLI(t, 30*time.Second, "sign", "verify", "--public-key", signKp, "--signature", sigFile)
+	if err != nil {
+		t.Fatalf("sign verify failed: %v, out: %s", err, out)
+	}
+	if !strings.Contains(stdout, `"valid": true`) {
+		t.Fatalf("expected valid signature, got: %s", stdout)
+	}
+}

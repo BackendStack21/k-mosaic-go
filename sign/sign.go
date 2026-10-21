@@ -379,6 +379,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	offset += levelLen
 
 	// Read SLSS public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: missing SLSS length")
+	}
 	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if slssLen > MaxComponentSize {
@@ -395,6 +398,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	offset += slssLen
 
 	// Read TDD public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: missing TDD length")
+	}
 	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if tddLen > MaxComponentSize {
@@ -411,6 +417,9 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
 	offset += tddLen
 
 	// Read EGRW public key
+	if offset+4 > len(data) {
+		return nil, errors.New("invalid public key: missing EGRW length")
+	}
 	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
 	offset += 4
 	if egrwLen > MaxComponentSize {

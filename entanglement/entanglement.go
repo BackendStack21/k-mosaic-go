@@ -169,6 +169,10 @@ func VerifyCommitment(data, commitment, opening []byte) bool {
 	return utils.ConstantTimeEqual(commitment, expected)
 }
 
+// MaxNIZKShareSize is the maximum share length a NIZK proof can carry.
+// Shares are masked with a single SHA3-256 output (32 bytes).
+const MaxNIZKShareSize = 32
+
 // NIZKProof represents a non-interactive zero-knowledge proof.
 type NIZKProof struct {
 	Commitments [][]byte
@@ -183,6 +187,14 @@ func GenerateNIZKProof(secret []byte, shares [][]byte, ciphertextHashes [][]byte
 	// Structured NIZK (Fiat-Shamir) proof generation
 	if len(shares) != 3 || len(ciphertextHashes) != 3 {
 		return nil
+	}
+
+	// Each share is masked with a single 32-byte SHA3-256 output, so shares
+	// longer than that cannot be encoded in a proof.
+	for _, share := range shares {
+		if len(share) > MaxNIZKShareSize {
+			return nil
+		}
 	}
 
 	commitments := make([][]byte, 3)
@@ -320,6 +332,11 @@ func VerifyNIZKProof(proof []byte, ciphertextHashes [][]byte, message []byte) bo
 			return false
 		}
 		shareLen := len(resp) - 32
+		// The mask is a single 32-byte hash output; a longer share cannot have
+		// been produced by GenerateNIZKProof and would overrun the mask.
+		if shareLen > MaxNIZKShareSize {
+			return false
+		}
 
 		commitRandomness := resp[shareLen:]
 

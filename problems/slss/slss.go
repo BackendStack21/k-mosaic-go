@@ -498,9 +498,15 @@ func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams
 	return &kmosaic.SLSSCiphertext{U: u, V: v}, nil
 }
 
-// Decrypt decrypts an SLSS ciphertext
+// Decrypt decrypts an SLSS ciphertext.
+// Returns nil if the ciphertext dimensions do not match the secret key.
 func Decrypt(ct *kmosaic.SLSSCiphertext, sk kmosaic.SLSSSecretKey, params kmosaic.SLSSParams) []byte {
 	q := params.Q
+
+	// u must have exactly one entry per secret coefficient.
+	if len(ct.U) != len(sk.S) {
+		return nil
+	}
 
 	// m = v - s^T * u
 	sTu := innerProduct(ct.U, sk.S, q)

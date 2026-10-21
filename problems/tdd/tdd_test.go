@@ -19,8 +19,11 @@ func TestTDD(t *testing.T) {
 		t.Fatalf("KeyGen failed: %v", err)
 	}
 
-	// Encrypt
-	msg := []byte("test")
+	// Encrypt a full 32-byte block (Decrypt always returns 32 bytes).
+	msg := make([]byte, 32)
+	for i := range msg {
+		msg[i] = byte(i * 7)
+	}
 	randomness, _ := utils.SecureRandomBytes(32)
 	ct, err := Encrypt(kp.PublicKey, msg, params.TDD, randomness)
 	if err != nil {
@@ -31,7 +34,7 @@ func TestTDD(t *testing.T) {
 	dec := Decrypt(ct, kp.SecretKey, kp.PublicKey, params.TDD)
 
 	if !bytes.Equal(msg, dec) {
-		t.Log("Decrypted message does not match")
+		t.Errorf("Decrypted message does not match: got %x, want %x", dec, msg)
 	}
 }
 

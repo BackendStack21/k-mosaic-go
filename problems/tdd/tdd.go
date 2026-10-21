@@ -19,6 +19,10 @@ const (
 	DomainFactorA = "kmosaic-tdd-factor-a-v1"
 	DomainFactorB = "kmosaic-tdd-factor-b-v1"
 	DomainFactorC = "kmosaic-tdd-factor-c-v1"
+
+	// EncryptedMessageWords is the number of int32 words appended to the
+	// masked matrix in a TDD ciphertext to carry the 32-byte encrypted message.
+	EncryptedMessageWords = 8
 )
 
 // mod returns x mod q, ensuring the result is always non-negative in [0, q).
@@ -93,10 +97,12 @@ func tensorAddOuterProduct(T []int32, n int, a, b, c []int32, q int) {
 }
 
 // tensorAdd adds two tensors element-wise modulo q.
+// B may contain negative entries (e.g. Gaussian noise), so the result is
+// fully reduced into [0, q).
 func tensorAdd(A, B []int32, q int) []int32 {
 	result := make([]int32, len(A))
 	for i := range A {
-		result[i] = fastMod(int64(A[i])+int64(B[i]), q)
+		result[i] = mod(int64(A[i])+int64(B[i]), q)
 	}
 	return result
 }
@@ -299,7 +305,7 @@ func Encrypt(pk kmosaic.TDDPublicKey, message []byte, params kmosaic.TDDParams, 
 	}
 
 	// Build ciphertext
-	encMsgLen := 8
+	encMsgLen := EncryptedMessageWords
 	data := make([]int32, len(masked)+encMsgLen)
 	copy(data, masked)
 
@@ -319,10 +325,16 @@ func Encrypt(pk kmosaic.TDDPublicKey, message []byte, params kmosaic.TDDParams, 
 	return &kmosaic.TDDCiphertext{Data: data}, nil
 }
 
-// Decrypt decrypts a TDD ciphertext
+// Decrypt decrypts a TDD ciphertext.
+// Returns nil if the ciphertext does not have the length Encrypt produces
+// for these parameters (n*n masked entries plus the encrypted message words).
 func Decrypt(ct *kmosaic.TDDCiphertext, sk kmosaic.TDDSecretKey, pk kmosaic.TDDPublicKey, params kmosaic.TDDParams) []byte {
 	n := params.N
-	encMsgLen := 8
+	encMsgLen := EncryptedMessageWords
+
+	if len(ct.Data) != n*n+encMsgLen {
+		return nil
+	}
 
 	masked := ct.Data[:len(ct.Data)-encMsgLen]
 
@@ -348,8 +360,6 @@ func Decrypt(ct *kmosaic.TDDCiphertext, sk kmosaic.TDDSecretKey, pk kmosaic.TDDP
 	for i := 0; i < 32; i++ {
 		result[i] = encryptedMsg[i] ^ keystream[i]
 	}
-
-	_ = n // Used for validation
 
 	return result
 }
