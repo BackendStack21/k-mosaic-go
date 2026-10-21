@@ -2,6 +2,10 @@
 
 The `k-mosaic-cli` is a command-line interface for the kMOSAIC post-quantum cryptographic library. It provides terminal-based access to key encapsulation, encryption/decryption, and digital signature operations.
 
+> **Warning:** kMOSAIC is experimental and unreviewed. Key files produced by
+> versions before 2.0.0 are insecure and no longer readable; see
+> [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
+
 ## TL;DR
 
 ```bash
@@ -234,8 +238,8 @@ Generates a new KEM (Key Encapsulation Mechanism) key pair.
 
 **Security Levels:**
 
-- `--level 128`: Provides 128-bit post-quantum security (faster, smaller keys)
-- `--level 256`: Provides 256-bit post-quantum security (slower, larger keys)
+- `--level 128`: MOS-128 parameter set (faster, smaller keys; see README "Security Levels")
+- `--level 256`: MOS-256 parameter set (slower, larger keys)
 
 **Example:**
 
@@ -413,8 +417,8 @@ Generates a new signature key pair.
 
 **Security Levels:**
 
-- `--level 128`: Provides 128-bit post-quantum security
-- `--level 256`: Provides 256-bit post-quantum security
+- `--level 128`: MOS-128 parameter set (see README "Security Levels")
+- `--level 256`: MOS-256 parameter set
 
 **Example:**
 

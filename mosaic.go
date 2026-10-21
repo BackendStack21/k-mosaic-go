@@ -3,13 +3,15 @@
 // using the kMOSAIC hybrid approach combining three independent hard problems:
 // SLSS (Sparse Lattice Subset Sum), TDD (Tensor Decomposition Distinguishing),
 // and EGRW (Expander Graph Random Walk).
+//
+// Only the SLSS (LWE) component contributes security; see SECURITY_ASSESSMENT.md.
 package kmosaic
 
 // Re-export commonly used functions through package-level wrappers.
 // Users can also import specific sub-packages directly for more control.
 
 // Version of the kMOSAIC Go implementation.
-const Version = "1.0.3"
+const Version = "2.0.0"
 
 // API summary:
 //

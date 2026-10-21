@@ -244,16 +244,16 @@ func TestSign_Failures(t *testing.T) {
 		t.Error("Verify passed with wrong message")
 	}
 
-	// Test modified signature
-	badSig := *sig
+	// Test modified signature (deep copies so one mutation cannot mask another)
+	badSig := &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
 	badSig.Challenge[0] ^= 1
-	if sign.Verify(&kp.PublicKey, msg, &badSig) {
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
 		t.Error("Verify passed with modified challenge")
 	}
 
-	badSig = *sig
-	badSig.Response[0] ^= 1
-	if sign.Verify(&kp.PublicKey, msg, &badSig) {
+	badSig = &kmosaic.MOSAICSignature{Challenge: append([]byte{}, sig.Challenge...), Z: append([]int32{}, sig.Z...)}
+	badSig.Z[0]++
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
 		t.Error("Verify passed with modified response")
 	}
 }

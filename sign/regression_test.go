@@ -1,34 +1,51 @@
 package sign
 
 import (
-	"encoding/binary"
 	"testing"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
-// TestDeserializePublicKeyTruncatedLengthFields verifies that a public key
-// buffer ending exactly where a component length prefix should start is
-// rejected with an error rather than a panic.
-func TestDeserializePublicKeyTruncatedLengthFields(t *testing.T) {
-	level := []byte(kmosaic.MOS128)
-	lenBuf := make([]byte, 4)
+// TestForgeryWithoutSecretKeyFails reproduces the attack that broke the
+// original kMOSAIC signature: with the old scheme Verify only recomputed the
+// challenge hash from public data, so any (commitment, H(commitment, msg, pk),
+// junk) triple verified. The lattice scheme must reject every such attempt.
+func TestForgeryWithoutSecretKeyFails(t *testing.T) {
+	kp, err := GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := &kp.PublicKey
+	p := pk.Params
+	msg := []byte("I owe the attacker one million dollars")
 
-	// Level + minimal SLSS component (8 zero bytes), then end of buffer: no TDD length.
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(level)))
-	data := append(append([]byte{}, lenBuf...), level...)
-	binary.LittleEndian.PutUint32(lenBuf, 8)
-	data = append(data, lenBuf...)
-	data = append(data, make([]byte, 8)...)
-	if _, err := DeserializePublicKey(data); err == nil {
-		t.Fatal("expected error for missing TDD length")
+	// Attempt 1: random challenge with a zero response.
+	forged := &kmosaic.MOSAICSignature{Challenge: make([]byte, p.CTildeSize), Z: make([]int32, p.N)}
+	if Verify(pk, msg, forged) {
+		t.Fatal("zero signature verified")
 	}
 
-	// Plus a minimal TDD component (4 zero bytes), then end of buffer: no EGRW length.
-	binary.LittleEndian.PutUint32(lenBuf, 4)
-	data = append(data, lenBuf...)
-	data = append(data, make([]byte, 4)...)
-	if _, err := DeserializePublicKey(data); err == nil {
-		t.Fatal("expected error for missing EGRW length")
+	// Attempt 2: pick z first, compute the challenge the verifier would derive
+	// for it (the strategy that worked against the old scheme), and present it.
+	z := make([]int32, p.N)
+	for i := range z {
+		z[i] = int32(i%7) - 3
+	}
+	tr := shake(TrSize, SerializePublicKey(pk))
+	mu := shake(TrSize, tr, msg)
+	w := matVec(pk.A, z, p.M, p.N, p.Q)
+	guess := shake(p.CTildeSize, mu, packW1(highBits(w, p.Q, p.Gamma2)))
+	forged = &kmosaic.MOSAICSignature{Challenge: guess, Z: z}
+	if Verify(pk, msg, forged) {
+		t.Fatal("challenge-first forgery verified")
+	}
+
+	// Attempt 3: random signatures.
+	for i := 0; i < 8; i++ {
+		c, _ := utils.SecureRandomBytes(p.CTildeSize)
+		if Verify(pk, msg, &kmosaic.MOSAICSignature{Challenge: c, Z: z}) {
+			t.Fatal("random signature verified")
+		}
 	}
 }

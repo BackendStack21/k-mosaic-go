@@ -1,4 +1,16 @@
 // Package kem implements the Key Encapsulation Mechanism for kMOSAIC.
+//
+// Encapsulation splits a 32-byte ephemeral secret into three XOR shares and
+// encrypts one share with each component scheme, then applies the
+// Fujisaki-Okamoto transform (re-encryption check with implicit rejection).
+//
+// SECURITY NOTE: only the SLSS (LWE) component provides confidentiality. The
+// TDD and EGRW "encryptions" derive their keystreams from values contained in
+// the ciphertext and public key, so their shares are recoverable by anyone.
+// The ephemeral secret is therefore exactly as secret as the SLSS share, and
+// the KEM's security rests on unstructured LWE alone. The extra components
+// are kept for format continuity; they add no security and should not be
+// described as defense in depth.
 package kem
 
 import (
@@ -151,6 +163,9 @@ func EncapsulateDeterministic(pk *kmosaic.MOSAICPublicKey, ephemeralSecret []byt
 	}
 
 	params := pk.Params
+	if slss.MessageSize(params.SLSS) != shareSize {
+		return nil, errors.New("SLSS parameters do not match the 32-byte share size")
+	}
 
 	// Derive randomness
 	randomness := utils.HashConcat(ephemeralSecret, pk.Binding)
@@ -319,7 +334,7 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 // ciphertextShapeValid reports whether every component of ct has the
 // dimensions that encapsulation under params produces.
 func ciphertextShapeValid(ct *kmosaic.MOSAICCiphertext, params kmosaic.MOSAICParams) bool {
-	if len(ct.C1.U) != params.SLSS.N || len(ct.C1.V) != shareSize*8 {
+	if len(ct.C1.U) != params.SLSS.N || len(ct.C1.V) != params.SLSS.L {
 		return false
 	}
 	if len(ct.C2.Data) != params.TDD.N*params.TDD.N+tdd.EncryptedMessageWords {
@@ -612,7 +627,7 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 	if offset+slssLen > len(data) {
 		return nil, errors.New("invalid public key: SLSS data truncated")
 	}
-	slssPK, err := slss.DeserializePublicKey(data[offset : offset+slssLen])
+	slssPK, err := slss.DeserializePublicKey(data[offset:offset+slssLen], params.SLSS)
 	if err != nil {
 		return nil, err
 	}
@@ -667,14 +682,7 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 		return nil, errors.New("invalid public key: binding mismatch")
 	}
 
-	// Validate consistency with params
-	expectedSLSSALen := params.SLSS.M * params.SLSS.N
-	if len(pk.SLSS.A) != expectedSLSSALen {
-		return nil, errors.New("invalid public key: SLSS.A length mismatch with params")
-	}
-	if len(pk.SLSS.T) != params.SLSS.M {
-		return nil, errors.New("invalid public key: SLSS.T length mismatch with params")
-	}
+	// Validate consistency with params (SLSS dimensions were checked by slss.DeserializePublicKey)
 	expectedTDDTLen := params.TDD.N * params.TDD.N * params.TDD.N
 	if len(pk.TDD.T) != expectedTDDTLen {
 		return nil, errors.New("invalid public key: TDD.T length mismatch with params")

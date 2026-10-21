@@ -251,36 +251,6 @@ func TestKEMEncapsulateDeterministic(t *testing.T) {
 // KEM SLSS Debug and PK-Inspect Tests
 // ============================================================================
 
-func TestKEMSLSSDebug(t *testing.T) {
-	dir := t.TempDir()
-	kpFile := filepath.Join(dir, "kem_kp.json")
-
-	// Keygen
-	_, stderr, err := runCLI(t, 20*time.Second, "kem", "keygen", "--level", "128", "--output", kpFile)
-	if err != nil {
-		t.Fatalf("kem keygen failed: %v, stderr: %s", err, stderr)
-	}
-
-	// SLSS Debug
-	debugOut, stderr, err := runCLI(t, 20*time.Second, "kem", "slss-debug", "--public-key", kpFile)
-	if err != nil {
-		t.Fatalf("kem slss-debug failed: %v, stderr: %s", err, stderr)
-	}
-
-	var debugInfo map[string]interface{}
-	if err := json.Unmarshal([]byte(debugOut), &debugInfo); err != nil {
-		t.Fatalf("unable to parse slss-debug output as json: %v, out: %s", err, debugOut)
-	}
-
-	// Verify expected debug fields exist
-	expectedFields := []string{"r_indices", "r_values", "e1_head", "e2_head", "u_head", "v_head", "u_len", "v_len"}
-	for _, field := range expectedFields {
-		if _, ok := debugInfo[field]; !ok {
-			t.Fatalf("slss-debug output missing field '%s': %v", field, debugInfo)
-		}
-	}
-}
-
 func TestKEMPKInspect(t *testing.T) {
 	dir := t.TempDir()
 	kpFile := filepath.Join(dir, "kem_kp.json")

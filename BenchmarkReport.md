@@ -1,5 +1,11 @@
 # kMOSAIC Go Benchmark Report
 
+> **Outdated.** These figures were measured on the 1.x design, whose
+> signature was a hash of the secret key (hence "12 μs" signing) and whose KEM
+> was breakable from the ciphertext alone. They do not describe version 2.0.0.
+> See the README for current timings and SECURITY_ASSESSMENT.md for why the
+> design changed.
+
 **Date:** January 2, 2026  
 **Platform:** macOS (darwin/arm64) - Apple M2 Pro  
 **Go Version:** 1.21+

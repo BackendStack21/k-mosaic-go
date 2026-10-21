@@ -26,13 +26,20 @@ const (
 // Parameter Types
 // =============================================================================
 
-// SLSSParams contains parameters for the Sparse Lattice Subset Sum problem.
+// SLSSParams contains parameters for the Sparse Lattice Subset Sum problem,
+// an LWE instance with sparse ternary secrets.
+//
+// The public key is (A, T = A·S + E) with A ∈ Z_q^{M×N} expanded from a public
+// seed, S ∈ {-1,0,1}^{N×L} with W non-zero entries per column and E ∈ Z^{M×L}
+// discrete Gaussian. Each of the L secret columns protects one message bit,
+// so a ciphertext never reuses an inner product across bits.
 type SLSSParams struct {
-	N     int     `json:"n"`     // Lattice dimension
-	M     int     `json:"m"`     // Number of equations
+	N     int     `json:"n"`     // Secret dimension (columns of A)
+	M     int     `json:"m"`     // Number of LWE samples (rows of A)
 	Q     int     `json:"q"`     // Prime modulus
-	W     int     `json:"w"`     // Sparsity weight
+	W     int     `json:"w"`     // Non-zero entries per secret column
 	Sigma float64 `json:"sigma"` // Error standard deviation
+	L     int     `json:"l"`     // Secret columns = message bits per ciphertext
 }
 
 // TDDParams contains parameters for the Tensor Decomposition Distinguishing problem.
@@ -73,13 +80,14 @@ type SL2Element struct {
 
 // SLSSPublicKey is the public key for SLSS.
 type SLSSPublicKey struct {
-	A []int32 // m x n matrix (flattened, row-major)
-	T []int32 // m-vector
+	Seed []byte  // 32-byte public seed from which A is expanded
+	A    []int32 // M x N matrix (flattened, row-major); derived from Seed, not serialized
+	T    []int32 // L x M matrix (flattened, row-major): T[j*M+i] = (A·s_j + e_j)[i]
 }
 
 // SLSSSecretKey is the secret key for SLSS.
 type SLSSSecretKey struct {
-	S []int8 // Sparse n-vector in {-1, 0, 1}
+	S []int8 // L x N matrix (flattened, row-major) of sparse ternary columns: S[j*N+i] = s_j[i]
 }
 
 // SLSSCiphertext is the ciphertext for SLSS encryption.
@@ -207,25 +215,45 @@ type EncryptedMessage struct {
 }
 
 // =============================================================================
-// Signature Key Types
+// Signature Types
 // =============================================================================
+
+// SignParams contains the parameters of the lattice signature scheme.
+//
+// The scheme is a Fiat-Shamir-with-aborts signature over unstructured
+// module-free LWE/SIS (the construction of CRYSTALS-Dilithium, FIPS 204, with
+// matrices over Z_q instead of polynomial rings). It proves knowledge of the
+// short matrices (S1, S2) with T = A·S1 + S2 (mod Q).
+type SignParams struct {
+	N          int `json:"n"`           // Columns of A; dimension of the mask y and response z
+	M          int `json:"m"`           // Rows of A; dimension of the commitment w
+	L          int `json:"l"`           // Columns of S1/S2/T; length of the challenge vector c
+	Q          int `json:"q"`           // Prime modulus
+	Eta        int `json:"eta"`         // Secret entries are uniform in [-Eta, Eta]
+	Tau        int `json:"tau"`         // Number of ±1 entries in the challenge c
+	Gamma1     int `json:"gamma1"`      // Mask y is uniform in (-Gamma1, Gamma1]
+	Gamma2     int `json:"gamma2"`      // Low-order rounding range; HighBits use alpha = 2*Gamma2
+	Beta       int `json:"beta"`        // Tau*Eta: bound on ||S1·c||∞ and ||S2·c||∞
+	CTildeSize int `json:"ctilde_size"` // Bytes of the challenge hash c̃
+}
 
 // MOSAICSignPublicKey is the public key for signature operations.
 type MOSAICSignPublicKey struct {
-	SLSS    SLSSPublicKey
-	TDD     TDDPublicKey
-	EGRW    EGRWPublicKey
-	Binding []byte
-	Params  MOSAICParams
+	Params SignParams
+	Rho    []byte  // 32-byte public seed from which A is expanded
+	T      []int32 // M x L matrix (flattened, row-major): T = A·S1 + S2 mod Q
+	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
 }
 
 // MOSAICSignSecretKey is the secret key for signature operations.
 type MOSAICSignSecretKey struct {
-	SLSS          SLSSSecretKey
-	TDD           TDDSecretKey
-	EGRW          EGRWSecretKey
-	Seed          []byte
-	PublicKeyHash []byte
+	Params SignParams
+	Rho    []byte  // Public seed of A
+	K      []byte  // 32-byte signing PRF key
+	Tr     []byte  // 64-byte hash of the serialized public key
+	S1     []int8  // N x L matrix (flattened, row-major), entries in [-Eta, Eta]
+	S2     []int8  // M x L matrix (flattened, row-major), entries in [-Eta, Eta]
+	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
 }
 
 // MOSAICSignKeyPair contains both public and secret keys for signatures.
@@ -234,48 +262,10 @@ type MOSAICSignKeyPair struct {
 	SecretKey MOSAICSignSecretKey
 }
 
-// =============================================================================
-// Signature Types
-// =============================================================================
-
-// SLSSCommitment is the commitment for SLSS in signatures.
-type SLSSCommitment struct {
-	W []int32
-}
-
-// TDDCommitment is the commitment for TDD in signatures.
-type TDDCommitment struct {
-	W []int32
-}
-
-// EGRWCommitment is the commitment for EGRW in signatures.
-type EGRWCommitment struct {
-	Vertex SL2Element
-}
-
-// SLSSResponse is the response for SLSS in signatures.
-type SLSSResponse struct {
-	Z          []int32
-	Commitment []byte // w1 commitment for verification
-}
-
-// TDDResponse is the response for TDD in signatures.
-type TDDResponse struct {
-	Z          []int32
-	Commitment []byte // w2 commitment for verification
-}
-
-// EGRWResponse is the response for EGRW in signatures.
-type EGRWResponse struct {
-	Combined []int
-	Hints    []byte
-}
-
-// MOSAICSignature is the complete signature.
+// MOSAICSignature is a signature: the challenge hash c̃ and the response z.
 type MOSAICSignature struct {
-	Commitment []byte
-	Challenge  []byte
-	Response   []byte
+	Challenge []byte  // c̃ = H(μ || HighBits(A·y)), CTildeSize bytes
+	Z         []int32 // z = y + S1·c, N entries with ||z||∞ < Gamma1 - Beta
 }
 
 // =============================================================================

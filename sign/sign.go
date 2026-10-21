@@ -1,32 +1,59 @@
-// Package sign implements the digital signature scheme for kMOSAIC.
+// Package sign implements the kMOSAIC digital signature scheme.
+//
+// The scheme is a Fiat-Shamir-with-aborts lattice signature: the construction
+// of CRYSTALS-Dilithium (FIPS 204, ML-DSA) instantiated over unstructured
+// matrices in Z_q rather than polynomial rings. The public key is
+// (ρ, T = A·S1 + S2 mod q) with A ∈ Z_q^{M×N} expanded from ρ and S1, S2 small;
+// a signature on message M is (c̃, z) with
+//
+//	y   ← uniform in (-γ1, γ1]^N
+//	w1  = HighBits(A·y)
+//	c̃   = H(H(tr || M) || w1),   c = SampleInBall(c̃)
+//	z   = y + S1·c,               restart unless ||z||∞ < γ1 - β
+//	                              and ||LowBits(A·y - S2·c)||∞ < γ2 - β
+//
+// and verification recomputes w1 as HighBits(A·z - T·c) and checks c̃.
+// Security reduces to unstructured LWE (key recovery) and SIS (forgery) with
+// the parameters of ML-DSA-65 / ML-DSA-87.
+//
+// The previous kMOSAIC signature derived its "response" as a hash of the
+// secret key that the verifier never checked, so anyone holding the public key
+// could forge signatures on arbitrary messages. That construction is gone.
 package sign
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"sync"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
 	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/problems/egrw"
-	"github.com/BackendStack21/k-mosaic-go/problems/slss"
-	"github.com/BackendStack21/k-mosaic-go/problems/tdd"
 	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
 const (
-	DomainSLSS       = "kmosaic-sign-slss-v1"
-	DomainTDD        = "kmosaic-sign-tdd-v1"
-	DomainEGRW       = "kmosaic-sign-egrw-v1"
-	DomainChallenge  = "kmosaic-sign-chal-v1"
-	DomainWitness    = "kmosaic-sign-wit-v1"
-	DomainResponse   = "kmosaic-sign-resp-v1"
-	MaxComponentSize = 10 * 1024 * 1024 // 10MB max for any single component
+	// DomainKeyGen separates the key-generation seed expansion.
+	DomainKeyGen = "kmosaic-sign-keygen-v2"
+
+	// SeedSize is the size of the public matrix seed ρ and the PRF key K.
+	SeedSize = 32
+	// TrSize is the size of tr = H(pk) and of μ = H(tr || M).
+	TrSize = 64
+
+	// MaxComponentSize bounds any length prefix read during deserialization.
+	MaxComponentSize = 64 * 1024 * 1024
+
+	// maxSignAttempts bounds the rejection-sampling loop. The acceptance rate
+	// is about 1/4 per attempt, so hitting this bound is a broken key or RNG.
+	maxSignAttempts = 1024
+
+	// zBytes is the packed size of one response coefficient (20 bits + γ1 offset).
+	zBytes = 3
+	// tBytes is the packed size of one public-key coefficient (23 bits).
+	tBytes = 3
 )
 
-// GenerateKeyPair generates a signature key pair.
+// GenerateKeyPair generates a signature key pair for the given security level.
 func GenerateKeyPair(level kmosaic.SecurityLevel) (result *kmosaic.MOSAICSignKeyPair, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -35,106 +62,110 @@ func GenerateKeyPair(level kmosaic.SecurityLevel) (result *kmosaic.MOSAICSignKey
 		}
 	}()
 
-	params, err := core.GetParams(level)
-	if err != nil {
-		return nil, err
-	}
-	if err := core.ValidateParams(params); err != nil {
-		return nil, err
-	}
-
-	seed, err := utils.SecureRandomBytes(32)
+	params, err := core.GetSignParams(level)
 	if err != nil {
 		return nil, err
 	}
 
-	kp, err := GenerateKeyPairFromSeed(params, seed)
-	utils.Zeroize(seed)
-	return kp, err
+	seed, err := utils.SecureRandomBytes(SeedSize)
+	if err != nil {
+		return nil, err
+	}
+	defer utils.Zeroize(seed)
+
+	return GenerateKeyPairFromSeed(params, seed)
 }
 
-// GenerateKeyPairFromSeed generates a deterministic signature key pair.
-func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic.MOSAICSignKeyPair, error) {
-	if len(seed) < 32 {
+// GenerateKeyPairFromSeed deterministically generates a signature key pair.
+func GenerateKeyPairFromSeed(params kmosaic.SignParams, seed []byte) (*kmosaic.MOSAICSignKeyPair, error) {
+	if len(seed) < SeedSize {
 		return nil, errors.New("seed must be at least 32 bytes")
 	}
 	if err := utils.ValidateSeedEntropy(seed); err != nil {
 		return nil, err
 	}
-
-	// Derive component seeds
-	slssSeed := utils.HashWithDomain(DomainSLSS, seed)
-	tddSeed := utils.HashWithDomain(DomainTDD, seed)
-	egrwSeed := utils.HashWithDomain(DomainEGRW, seed)
-	defer func() {
-		utils.Zeroize(slssSeed)
-		utils.Zeroize(tddSeed)
-		utils.Zeroize(egrwSeed)
-	}()
-
-	// Generate component keys in parallel
-	var wg sync.WaitGroup
-	var slssKP *kmosaic.SLSSKeyPair
-	var tddKP *kmosaic.TDDKeyPair
-	var egrwKP *kmosaic.EGRWKeyPair
-	var slssErr, tddErr, egrwErr error
-
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		slssKP, slssErr = slss.KeyGen(params.SLSS, slssSeed)
-	}()
-	go func() {
-		defer wg.Done()
-		tddKP, tddErr = tdd.KeyGen(params.TDD, tddSeed)
-	}()
-	go func() {
-		defer wg.Done()
-		egrwKP, egrwErr = egrw.KeyGen(params.EGRW, egrwSeed)
-	}()
-	wg.Wait()
-
-	if slssErr != nil {
-		return nil, slssErr
+	if err := core.ValidateSignParams(params); err != nil {
+		return nil, err
 	}
-	if tddErr != nil {
-		return nil, tddErr
-	}
-	if egrwErr != nil {
-		return nil, egrwErr
+	if _, err := core.SignLevelFromParams(params); err != nil {
+		return nil, err
 	}
 
-	// Compute binding
-	slssBytes := slss.SerializePublicKey(slssKP.PublicKey)
-	tddBytes := tdd.SerializePublicKey(tddKP.PublicKey)
-	egrwBytes := egrw.SerializePublicKey(egrwKP.PublicKey)
-	binding := entanglement.ComputeBinding(slssBytes, tddBytes, egrwBytes)
+	n, m, l, q, eta := params.N, params.M, params.L, params.Q, params.Eta
 
-	publicKey := kmosaic.MOSAICSignPublicKey{
-		SLSS:    slssKP.PublicKey,
-		TDD:     tddKP.PublicKey,
-		EGRW:    egrwKP.PublicKey,
-		Binding: binding,
-		Params:  params,
-	}
+	// (ρ, ρ', K) = H(seed || N || M || L)
+	expanded := utils.Shake256WithDomain(DomainKeyGen,
+		append(append(append(append([]byte{}, seed...), uint32LE(uint32(n))...), uint32LE(uint32(m))...), uint32LE(uint32(l))...),
+		SeedSize+TrSize+SeedSize)
+	rho := append([]byte{}, expanded[:SeedSize]...)
+	rhoPrime := expanded[SeedSize : SeedSize+TrSize]
+	K := append([]byte{}, expanded[SeedSize+TrSize:]...)
+	defer utils.Zeroize(expanded)
 
-	publicKeyHash := utils.SHA3256(SerializePublicKey(&publicKey))
+	A := expandA(rho, m, n, q)
+	S1 := sampleEta(rhoPrime, 0, n*l, eta)
+	S2 := sampleEta(rhoPrime, 1, m*l, eta)
+	T := computeT(A, S1, S2, m, n, l, q)
+
+	publicKey := kmosaic.MOSAICSignPublicKey{Params: params, Rho: rho, T: T, A: A}
+	tr := shake(TrSize, SerializePublicKey(&publicKey))
 
 	secretKey := kmosaic.MOSAICSignSecretKey{
-		SLSS:          slssKP.SecretKey,
-		TDD:           tddKP.SecretKey,
-		EGRW:          egrwKP.SecretKey,
-		Seed:          append([]byte{}, seed...),
-		PublicKeyHash: publicKeyHash,
+		Params: params,
+		Rho:    append([]byte{}, rho...),
+		K:      K,
+		Tr:     tr,
+		S1:     S1,
+		S2:     S2,
+		A:      A,
 	}
-
-	return &kmosaic.MOSAICSignKeyPair{
-		PublicKey: publicKey,
-		SecretKey: secretKey,
-	}, nil
+	return &kmosaic.MOSAICSignKeyPair{PublicKey: publicKey, SecretKey: secretKey}, nil
 }
 
-// Sign creates a signature for a message.
+// checkSecretKey validates the shape of a secret key.
+func checkSecretKey(sk *kmosaic.MOSAICSignSecretKey) error {
+	p := sk.Params
+	if err := core.ValidateSignParams(p); err != nil {
+		return err
+	}
+	if len(sk.Rho) != SeedSize || len(sk.K) != SeedSize || len(sk.Tr) != TrSize {
+		return errors.New("invalid secret key: wrong seed or hash length")
+	}
+	if len(sk.S1) != p.N*p.L || len(sk.S2) != p.M*p.L {
+		return errors.New("invalid secret key: wrong matrix dimensions")
+	}
+	for _, s := range sk.S1 {
+		if int(s) > p.Eta || int(s) < -p.Eta {
+			return errors.New("invalid secret key: S1 entry out of range")
+		}
+	}
+	for _, s := range sk.S2 {
+		if int(s) > p.Eta || int(s) < -p.Eta {
+			return errors.New("invalid secret key: S2 entry out of range")
+		}
+	}
+	return nil
+}
+
+// checkPublicKey validates the shape of a public key.
+func checkPublicKey(pk *kmosaic.MOSAICSignPublicKey) error {
+	p := pk.Params
+	if err := core.ValidateSignParams(p); err != nil {
+		return err
+	}
+	if len(pk.Rho) != SeedSize {
+		return errors.New("invalid public key: wrong seed length")
+	}
+	if len(pk.T) != p.M*p.L {
+		return errors.New("invalid public key: wrong T dimensions")
+	}
+	return nil
+}
+
+// Sign creates a signature on message with sk. pk, if non-nil, must be the
+// matching public key; it is checked against the hash stored in sk.
+// Signing is hedged: fresh randomness is mixed into the mask derivation so
+// that a faulty RNG degrades to deterministic (still secure) signing.
 func Sign(sk *kmosaic.MOSAICSignSecretKey, pk *kmosaic.MOSAICSignPublicKey, message []byte) (result *kmosaic.MOSAICSignature, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -143,71 +174,72 @@ func Sign(sk *kmosaic.MOSAICSignSecretKey, pk *kmosaic.MOSAICSignPublicKey, mess
 		}
 	}()
 
-	// Generate random witness
-	witnessRand, err := utils.SecureRandomBytes(32)
-	if err != nil {
+	if err := checkSecretKey(sk); err != nil {
 		return nil, err
 	}
-
-	// Compute message hash
-	msgHash := utils.SHA3256(utils.HashConcat(message, pk.Binding))
-
-	// Compute commitment: H(witness || message || binding)
-	commitment := utils.SHA3256(utils.HashConcat(witnessRand, msgHash, pk.Binding))
-
-	// Compute challenge: H(commitment || message || publicKeyHash)
-	challenge := utils.HashWithDomain(DomainChallenge, utils.HashConcat(commitment, msgHash, sk.PublicKeyHash))
-
-	// Compute response: combine secret key with challenge
-	response := computeResponse(sk, challenge, witnessRand)
-
-	// Zeroize witness randomness
-	utils.Zeroize(witnessRand)
-
-	return &kmosaic.MOSAICSignature{
-		Commitment: commitment,
-		Challenge:  challenge,
-		Response:   response,
-	}, nil
-}
-
-// computeResponse creates the signature response.
-func computeResponse(sk *kmosaic.MOSAICSignSecretKey, challenge, witnessRand []byte) []byte {
-	// Combine secret key components with challenge and witness
-	skBytes := make([]byte, 0, 1024)
-
-	// SLSS secret key contribution
-	for _, v := range sk.SLSS.S {
-		buf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(buf, uint32(int32(v)))
-		skBytes = append(skBytes, buf...)
-	}
-
-	// TDD secret key contribution
-	for _, vec := range sk.TDD.Factors.A {
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			skBytes = append(skBytes, buf...)
+	if pk != nil {
+		if err := checkPublicKey(pk); err != nil {
+			return nil, err
+		}
+		if !utils.ConstantTimeEqual(sk.Tr, shake(TrSize, SerializePublicKey(pk))) {
+			return nil, errors.New("public key does not match secret key")
 		}
 	}
 
-	// EGRW secret key contribution
-	for _, w := range sk.EGRW.Walk {
-		skBytes = append(skBytes, byte(w))
+	p := sk.Params
+	n, m, l, q := p.N, p.M, p.L, p.Q
+	A := sk.A
+	if len(A) != m*n {
+		A = expandA(sk.Rho, m, n, q)
 	}
 
-	// Generate response as hash of combined data
-	response := utils.Shake256(utils.HashWithDomain(DomainResponse,
-		utils.HashConcat(skBytes, challenge, witnessRand)), 64)
+	rnd, err := utils.SecureRandomBytes(SeedSize)
+	if err != nil {
+		return nil, err
+	}
+	defer utils.Zeroize(rnd)
 
-	// Zeroize sensitive data
-	utils.Zeroize(skBytes)
+	mu := shake(TrSize, sk.Tr, message)
+	rhoPrime := shake(TrSize, sk.K, rnd, mu)
+	defer utils.Zeroize(rhoPrime)
 
-	return response
+	zBound := int32(p.Gamma1 - p.Beta)
+	r0Bound := int32(p.Gamma2 - p.Beta)
+
+	for kappa := 0; kappa < maxSignAttempts; kappa++ {
+		y := expandMask(rhoPrime, uint16(kappa), n, p.Gamma1)
+		w := matVec(A, y, m, n, q)
+		w1 := highBits(w, q, p.Gamma2)
+		ctilde := shake(p.CTildeSize, mu, packW1(w1))
+		c := sampleInBall(ctilde, p.Tau, l)
+
+		z := mulSmall(sk.S1, c, n, l)
+		for i := range z {
+			z[i] += y[i]
+		}
+		utils.ZeroizeInt32(y)
+		if infNorm(z) >= zBound {
+			utils.ZeroizeInt32(z)
+			continue
+		}
+
+		s2c := mulSmall(sk.S2, c, m, l)
+		for i := range s2c {
+			s2c[i] = modQ(int64(w[i])-int64(s2c[i]), q)
+		}
+		r0 := lowBits(s2c, q, p.Gamma2)
+		utils.ZeroizeInt32(s2c)
+		if infNorm(r0) >= r0Bound {
+			utils.ZeroizeInt32(z)
+			continue
+		}
+
+		return &kmosaic.MOSAICSignature{Challenge: ctilde, Z: z}, nil
+	}
+	return nil, errors.New("signing failed: rejection sampling did not terminate")
 }
 
-// Verify checks if a signature is valid for a message.
+// Verify reports whether sig is a valid signature on message under pk.
 func Verify(pk *kmosaic.MOSAICSignPublicKey, message []byte, sig *kmosaic.MOSAICSignature) (isValid bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -215,430 +247,261 @@ func Verify(pk *kmosaic.MOSAICSignPublicKey, message []byte, sig *kmosaic.MOSAIC
 		}
 	}()
 
-	// Check lengths
-	if len(sig.Commitment) != 32 || len(sig.Challenge) != 32 || len(sig.Response) != 64 {
+	if pk == nil || sig == nil {
+		return false
+	}
+	if err := checkPublicKey(pk); err != nil {
+		return false
+	}
+	p := pk.Params
+	n, m, l, q := p.N, p.M, p.L, p.Q
+
+	if len(sig.Challenge) != p.CTildeSize || len(sig.Z) != n {
+		return false
+	}
+	if infNorm(sig.Z) >= int32(p.Gamma1-p.Beta) {
 		return false
 	}
 
-	// Compute message hash
-	msgHash := utils.SHA3256(utils.HashConcat(message, pk.Binding))
+	A := pk.A
+	if len(A) != m*n {
+		A = expandA(pk.Rho, m, n, q)
+	}
 
-	// Compute public key hash
-	pkHash := utils.SHA3256(SerializePublicKey(pk))
+	tr := shake(TrSize, SerializePublicKey(pk))
+	mu := shake(TrSize, tr, message)
+	c := sampleInBall(sig.Challenge, p.Tau, l)
 
-	// Recompute expected challenge
-	expectedChallenge := utils.HashWithDomain(DomainChallenge,
-		utils.HashConcat(sig.Commitment, msgHash, pkHash))
+	// w' = A·z - T·c = A·y - S2·c, whose HighBits equal HighBits(A·y) by construction.
+	w := matVec(A, sig.Z, m, n, q)
+	tc := mulT(pk.T, c, m, l, q)
+	for i := range w {
+		w[i] = modQ(int64(w[i])-int64(tc[i]), q)
+	}
+	w1 := highBits(w, q, p.Gamma2)
+	expected := shake(p.CTildeSize, mu, packW1(w1))
 
-	// Verify challenge matches
-	return utils.ConstantTimeEqual(sig.Challenge, expectedChallenge)
+	return utils.ConstantTimeEqual(sig.Challenge, expected)
 }
 
-// SerializePublicKey serializes a signature public key.
+// -----------------------------------------------------------------------------
+// Serialization
+// -----------------------------------------------------------------------------
+
+func levelBytes(params kmosaic.SignParams) []byte {
+	level, err := core.SignLevelFromParams(params)
+	if err != nil {
+		return nil
+	}
+	return []byte(level)
+}
+
+func put3(buf []byte, v uint32) {
+	buf[0] = byte(v)
+	buf[1] = byte(v >> 8)
+	buf[2] = byte(v >> 16)
+}
+
+func get3(buf []byte) uint32 {
+	return uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16
+}
+
+// SerializePublicKey serializes a signature public key as
+// [level_len:4][level][rho:32][t_count:4][T entries, 3 bytes each].
 func SerializePublicKey(pk *kmosaic.MOSAICSignPublicKey) []byte {
-	slssBytes := slss.SerializePublicKey(pk.SLSS)
-	tddBytes := tdd.SerializePublicKey(pk.TDD)
-	egrwBytes := egrw.SerializePublicKey(pk.EGRW)
-
-	// Serialize params (security level as string)
-	levelBytes := []byte(pk.Params.Level)
-
-	result := make([]byte, 0, 16+len(slssBytes)+len(tddBytes)+len(egrwBytes)+len(pk.Binding)+len(levelBytes))
-
-	lenBuf := make([]byte, 4)
-
-	// Security level
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(levelBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, levelBytes...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(slssBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, slssBytes...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(tddBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, tddBytes...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(egrwBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, egrwBytes...)
-
-	result = append(result, pk.Binding...)
-
+	lvl := levelBytes(pk.Params)
+	result := make([]byte, 0, 4+len(lvl)+SeedSize+4+tBytes*len(pk.T))
+	result = append(result, uint32LE(uint32(len(lvl)))...)
+	result = append(result, lvl...)
+	result = append(result, pk.Rho...)
+	result = append(result, uint32LE(uint32(len(pk.T)))...)
+	buf := make([]byte, tBytes)
+	for _, v := range pk.T {
+		put3(buf, uint32(v))
+		result = append(result, buf...)
+	}
 	return result
 }
 
-// SerializeSignature serializes a signature.
-func SerializeSignature(sig *kmosaic.MOSAICSignature) []byte {
-	result := make([]byte, 0, 12+len(sig.Commitment)+len(sig.Challenge)+len(sig.Response))
-
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sig.Commitment)))
-	result = append(result, lenBuf...)
-	result = append(result, sig.Commitment...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sig.Challenge)))
-	result = append(result, lenBuf...)
-	result = append(result, sig.Challenge...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sig.Response)))
-	result = append(result, lenBuf...)
-	result = append(result, sig.Response...)
-
-	return result
-}
-
-// SerializeSecretKey serializes a signature secret key.
-func SerializeSecretKey(sk *kmosaic.MOSAICSignSecretKey) []byte {
-	result := make([]byte, 0)
-	lenBuf := make([]byte, 4)
-
-	// SLSS secret key (sparse vector)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.SLSS.S)))
-	result = append(result, lenBuf...)
-	for _, v := range sk.SLSS.S {
-		result = append(result, byte(v))
-	}
-
-	// TDD secret key (factors)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.TDD.Factors.A)))
-	result = append(result, lenBuf...)
-	for _, vec := range sk.TDD.Factors.A {
-		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
-		result = append(result, lenBuf...)
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			result = append(result, buf...)
-		}
-	}
-	for _, vec := range sk.TDD.Factors.B {
-		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
-		result = append(result, lenBuf...)
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			result = append(result, buf...)
-		}
-	}
-	for _, vec := range sk.TDD.Factors.C {
-		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
-		result = append(result, lenBuf...)
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			result = append(result, buf...)
-		}
-	}
-
-	// EGRW secret key (walk)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.EGRW.Walk)))
-	result = append(result, lenBuf...)
-	for _, v := range sk.EGRW.Walk {
-		result = append(result, byte(v))
-	}
-
-	// Seed
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.Seed)))
-	result = append(result, lenBuf...)
-	result = append(result, sk.Seed...)
-
-	// PublicKeyHash
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.PublicKeyHash)))
-	result = append(result, lenBuf...)
-	result = append(result, sk.PublicKeyHash...)
-
-	return result
-}
-
-// DeserializePublicKey deserializes bytes to a signature public key.
+// DeserializePublicKey parses a public key written by SerializePublicKey and
+// expands the matrix A.
 func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
-	if len(data) < 16 {
+	off := 0
+	if off+4 > len(data) {
 		return nil, errors.New("invalid public key data: too short")
 	}
-
-	offset := 0
-	pk := &kmosaic.MOSAICSignPublicKey{}
-
-	// Read security level
-	levelLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if levelLen > MaxComponentSize {
-		return nil, errors.New("invalid public key: security level size exceeds maximum")
-	}
-	if offset+levelLen > len(data) {
+	lvlLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	if lvlLen > MaxComponentSize || off+lvlLen > len(data) {
 		return nil, errors.New("invalid public key: security level truncated")
 	}
-	level := kmosaic.SecurityLevel(data[offset : offset+levelLen])
-	params, err := core.GetParams(level)
+	params, err := core.GetSignParams(kmosaic.SecurityLevel(data[off : off+lvlLen]))
 	if err != nil {
 		return nil, err
 	}
-	pk.Params = params
-	offset += levelLen
+	off += lvlLen
 
-	// Read SLSS public key
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid public key: missing SLSS length")
+	if off+SeedSize+4 > len(data) {
+		return nil, errors.New("invalid public key: truncated")
 	}
-	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if slssLen > MaxComponentSize {
-		return nil, errors.New("invalid public key: SLSS data size exceeds maximum")
+	rho := append([]byte{}, data[off:off+SeedSize]...)
+	off += SeedSize
+	tCount := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	if tCount != params.M*params.L {
+		return nil, errors.New("invalid public key: T dimension mismatch with params")
 	}
-	if offset+slssLen > len(data) {
-		return nil, errors.New("invalid public key: SLSS data truncated")
+	if len(data) != off+tBytes*tCount {
+		return nil, errors.New("invalid public key: wrong length")
 	}
-	slssPK, err := slss.DeserializePublicKey(data[offset : offset+slssLen])
-	if err != nil {
-		return nil, err
-	}
-	pk.SLSS = *slssPK
-	offset += slssLen
-
-	// Read TDD public key
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid public key: missing TDD length")
-	}
-	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if tddLen > MaxComponentSize {
-		return nil, errors.New("invalid public key: TDD data size exceeds maximum")
-	}
-	if offset+tddLen > len(data) {
-		return nil, errors.New("invalid public key: TDD data truncated")
-	}
-	tddPK, err := tdd.DeserializePublicKey(data[offset : offset+tddLen])
-	if err != nil {
-		return nil, err
-	}
-	pk.TDD = *tddPK
-	offset += tddLen
-
-	// Read EGRW public key
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid public key: missing EGRW length")
-	}
-	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if egrwLen > MaxComponentSize {
-		return nil, errors.New("invalid public key: EGRW data size exceeds maximum")
-	}
-	if offset+egrwLen > len(data) {
-		return nil, errors.New("invalid public key: EGRW data truncated")
-	}
-	egrwPK, err := egrw.DeserializePublicKey(data[offset : offset+egrwLen])
-	if err != nil {
-		return nil, err
-	}
-	pk.EGRW = *egrwPK
-	offset += egrwLen
-
-	// Rest is binding (32 bytes)
-	if offset+32 > len(data) {
-		return nil, errors.New("invalid public key: binding truncated")
-	}
-	pk.Binding = make([]byte, 32)
-	copy(pk.Binding, data[offset:offset+32])
-
-	// Cross-field consistency checks
-	expectedSLSSALen := params.SLSS.M * params.SLSS.N
-	if len(pk.SLSS.A) != expectedSLSSALen {
-		return nil, errors.New("invalid public key: SLSS.A length mismatch with params")
-	}
-	if len(pk.SLSS.T) != params.SLSS.M {
-		return nil, errors.New("invalid public key: SLSS.T length mismatch with params")
-	}
-	expectedTDDTLen := params.TDD.N * params.TDD.N * params.TDD.N
-	if len(pk.TDD.T) != expectedTDDTLen {
-		return nil, errors.New("invalid public key: TDD.T length mismatch with params")
+	T := make([]int32, tCount)
+	for i := 0; i < tCount; i++ {
+		v := get3(data[off+tBytes*i:])
+		if int(v) >= params.Q {
+			return nil, errors.New("invalid public key: T entry out of range")
+		}
+		T[i] = int32(v)
 	}
 
+	pk := &kmosaic.MOSAICSignPublicKey{Params: params, Rho: rho, T: T}
+	pk.A = expandA(rho, params.M, params.N, params.Q)
 	return pk, nil
 }
 
-// DeserializeSecretKey deserializes bytes to a signature secret key.
+// SerializeSecretKey serializes a signature secret key as
+// [level_len:4][level][rho:32][K:32][tr:64][s1_count:4][S1 bytes][s2_count:4][S2 bytes].
+func SerializeSecretKey(sk *kmosaic.MOSAICSignSecretKey) []byte {
+	lvl := levelBytes(sk.Params)
+	result := make([]byte, 0, 4+len(lvl)+SeedSize+SeedSize+TrSize+8+len(sk.S1)+len(sk.S2))
+	result = append(result, uint32LE(uint32(len(lvl)))...)
+	result = append(result, lvl...)
+	result = append(result, sk.Rho...)
+	result = append(result, sk.K...)
+	result = append(result, sk.Tr...)
+	result = append(result, uint32LE(uint32(len(sk.S1)))...)
+	for _, s := range sk.S1 {
+		result = append(result, byte(s))
+	}
+	result = append(result, uint32LE(uint32(len(sk.S2)))...)
+	for _, s := range sk.S2 {
+		result = append(result, byte(s))
+	}
+	return result
+}
+
+// DeserializeSecretKey parses a secret key written by SerializeSecretKey.
 func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
-	if len(data) < 4 {
+	off := 0
+	if off+4 > len(data) {
 		return nil, errors.New("invalid secret key data: too short")
 	}
+	lvlLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	if lvlLen > MaxComponentSize || off+lvlLen > len(data) {
+		return nil, errors.New("invalid secret key: security level truncated")
+	}
+	params, err := core.GetSignParams(kmosaic.SecurityLevel(data[off : off+lvlLen]))
+	if err != nil {
+		return nil, err
+	}
+	off += lvlLen
 
-	offset := 0
-	sk := &kmosaic.MOSAICSignSecretKey{}
+	if off+SeedSize+SeedSize+TrSize+4 > len(data) {
+		return nil, errors.New("invalid secret key: truncated")
+	}
+	sk := &kmosaic.MOSAICSignSecretKey{Params: params}
+	sk.Rho = append([]byte{}, data[off:off+SeedSize]...)
+	off += SeedSize
+	sk.K = append([]byte{}, data[off:off+SeedSize]...)
+	off += SeedSize
+	sk.Tr = append([]byte{}, data[off:off+TrSize]...)
+	off += TrSize
 
-	// Read SLSS secret key
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: truncated SLSS length")
-	}
-	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+slssLen > len(data) {
-		return nil, errors.New("invalid secret key: SLSS data truncated")
-	}
-	sk.SLSS.S = make([]int8, slssLen)
-	for i := 0; i < slssLen; i++ {
-		sk.SLSS.S[i] = int8(data[offset+i])
-	}
-	offset += slssLen
-
-	// Read TDD factors
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing TDD factor count")
-	}
-	factorCount := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if factorCount < 0 || factorCount > 1000000 {
-		return nil, errors.New("invalid secret key: unreasonable factor count")
-	}
-	sk.TDD.Factors.A = make([][]int32, factorCount)
-	sk.TDD.Factors.B = make([][]int32, factorCount)
-	sk.TDD.Factors.C = make([][]int32, factorCount)
-
-	for i := 0; i < factorCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid secret key: TDD factor A length truncated")
+	readSmall := func(expected int) ([]int8, error) {
+		if off+4 > len(data) {
+			return nil, errors.New("invalid secret key: missing matrix length")
 		}
-		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
-			return nil, errors.New("invalid secret key: TDD factor A truncated")
+		count := int(binary.LittleEndian.Uint32(data[off:]))
+		off += 4
+		if count != expected {
+			return nil, errors.New("invalid secret key: matrix dimension mismatch with params")
 		}
-		sk.TDD.Factors.A[i] = make([]int32, vecLen)
-		for j := 0; j < vecLen; j++ {
-			sk.TDD.Factors.A[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
-			offset += 4
+		if off+count > len(data) {
+			return nil, errors.New("invalid secret key: matrix truncated")
 		}
-	}
-	for i := 0; i < factorCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid secret key: TDD factor B length truncated")
+		out := make([]int8, count)
+		for i := 0; i < count; i++ {
+			v := int8(data[off+i])
+			if int(v) > params.Eta || int(v) < -params.Eta {
+				return nil, errors.New("invalid secret key: entry out of range")
+			}
+			out[i] = v
 		}
-		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
-			return nil, errors.New("invalid secret key: TDD factor B truncated")
-		}
-		sk.TDD.Factors.B[i] = make([]int32, vecLen)
-		for j := 0; j < vecLen; j++ {
-			sk.TDD.Factors.B[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
-			offset += 4
-		}
+		off += count
+		return out, nil
 	}
-	for i := 0; i < factorCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid secret key: TDD factor C length truncated")
-		}
-		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
-			return nil, errors.New("invalid secret key: TDD factor C truncated")
-		}
-		sk.TDD.Factors.C[i] = make([]int32, vecLen)
-		for j := 0; j < vecLen; j++ {
-			sk.TDD.Factors.C[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
-			offset += 4
-		}
+	if sk.S1, err = readSmall(params.N * params.L); err != nil {
+		return nil, err
 	}
-
-	// EGRW secret key (walk)
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing EGRW walk length")
+	if sk.S2, err = readSmall(params.M * params.L); err != nil {
+		return nil, err
 	}
-	walkLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if walkLen < 0 || walkLen > (len(data)-offset) {
-		return nil, errors.New("invalid secret key: EGRW walk truncated")
+	if off != len(data) {
+		return nil, errors.New("invalid secret key: trailing data")
 	}
-	sk.EGRW.Walk = make([]int, walkLen)
-	for i := 0; i < walkLen; i++ {
-		sk.EGRW.Walk[i] = int(data[offset+i])
-	}
-	offset += walkLen
-
-	// Read Seed
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing seed length")
-	}
-	seedLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if seedLen < 0 || seedLen > (len(data)-offset) {
-		return nil, errors.New("invalid secret key: seed truncated")
-	}
-	sk.Seed = make([]byte, seedLen)
-	copy(sk.Seed, data[offset:offset+seedLen])
-	offset += seedLen
-
-	// Read PublicKeyHash
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing public key hash length")
-	}
-	hashLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if hashLen < 0 || hashLen > (len(data)-offset) {
-		return nil, errors.New("invalid secret key: public key hash truncated")
-	}
-	sk.PublicKeyHash = make([]byte, hashLen)
-	copy(sk.PublicKeyHash, data[offset:offset+hashLen])
-
+	sk.A = expandA(sk.Rho, params.M, params.N, params.Q)
 	return sk, nil
 }
 
-// DeserializeSignature deserializes bytes to a signature.
+// SerializeSignature serializes a signature as
+// [ctilde_len:4][ctilde][z_count:4][z entries + gamma1, 3 bytes each].
+func SerializeSignature(sig *kmosaic.MOSAICSignature) []byte {
+	result := make([]byte, 0, 8+len(sig.Challenge)+zBytes*len(sig.Z))
+	result = append(result, uint32LE(uint32(len(sig.Challenge)))...)
+	result = append(result, sig.Challenge...)
+	result = append(result, uint32LE(uint32(len(sig.Z)))...)
+	buf := make([]byte, zBytes)
+	gamma1 := int32(1 << 19)
+	for _, z := range sig.Z {
+		put3(buf, uint32(z+gamma1))
+		result = append(result, buf...)
+	}
+	return result
+}
+
+// DeserializeSignature parses a signature written by SerializeSignature.
+// Range checks on z are performed by Verify.
 func DeserializeSignature(data []byte) (*kmosaic.MOSAICSignature, error) {
-	if len(data) < 12 {
+	off := 0
+	if off+4 > len(data) {
 		return nil, errors.New("invalid signature data: too short")
 	}
-
-	// Maximum signature component size (1MB each for commitment, challenge, response)
-	const maxSigComponentSize = 1 << 20
-
-	sig := &kmosaic.MOSAICSignature{}
-	offset := 0
-
-	// Read commitment
-	commitLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if commitLen < 0 || commitLen > maxSigComponentSize {
-		return nil, errors.New("invalid signature: commitment length exceeds limit")
+	cLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	if cLen < 32 || cLen > 64 {
+		return nil, errors.New("invalid signature: challenge length out of range")
 	}
-	if offset+commitLen > len(data) {
-		return nil, errors.New("invalid signature: commitment truncated")
-	}
-	sig.Commitment = make([]byte, commitLen)
-	copy(sig.Commitment, data[offset:offset+commitLen])
-	offset += commitLen
-
-	// Read challenge
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid signature: missing challenge length")
-	}
-	chalLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if chalLen < 0 || chalLen > maxSigComponentSize {
-		return nil, errors.New("invalid signature: challenge length exceeds limit")
-	}
-	if offset+chalLen > len(data) {
+	if off+cLen > len(data) {
 		return nil, errors.New("invalid signature: challenge truncated")
 	}
-	sig.Challenge = make([]byte, chalLen)
-	copy(sig.Challenge, data[offset:offset+chalLen])
-	offset += chalLen
+	sig := &kmosaic.MOSAICSignature{Challenge: append([]byte{}, data[off:off+cLen]...)}
+	off += cLen
 
-	// Read response
-	if offset+4 > len(data) {
+	if off+4 > len(data) {
 		return nil, errors.New("invalid signature: missing response length")
 	}
-	respLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if respLen < 0 || respLen > maxSigComponentSize {
+	zCount := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	if zCount > utils.MaxVectorLength {
 		return nil, errors.New("invalid signature: response length exceeds limit")
 	}
-	if offset+respLen > len(data) {
-		return nil, errors.New("invalid signature: response truncated")
+	if len(data) != off+zBytes*zCount {
+		return nil, errors.New("invalid signature: wrong length")
 	}
-	sig.Response = make([]byte, respLen)
-	copy(sig.Response, data[offset:offset+respLen])
-
+	gamma1 := int32(1 << 19)
+	sig.Z = make([]int32, zCount)
+	for i := 0; i < zCount; i++ {
+		sig.Z[i] = int32(get3(data[off+zBytes*i:])) - gamma1
+	}
 	return sig, nil
 }

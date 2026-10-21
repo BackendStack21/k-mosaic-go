@@ -55,7 +55,8 @@ func TestSignSignPanicRecovery(t *testing.T) {
 	if sig == nil {
 		t.Fatalf("Sign returned nil signature")
 	}
-	if len(sig.Commitment) != 32 || len(sig.Challenge) != 32 || len(sig.Response) != 64 {
+	p := kp.PublicKey.Params
+	if len(sig.Challenge) != p.CTildeSize || len(sig.Z) != p.N {
 		t.Errorf("Signature components have incorrect length")
 	}
 }

@@ -13,23 +13,38 @@ A Go implementation of the kMOSAIC post-quantum cryptographic library.
 
 ## ⚠️ Security Warning
 
-**kMOSAIC is an experimental cryptographic construction that has NOT been formally verified by academic peer review. DO NOT use in production systems protecting sensitive data.**
+**kMOSAIC is an experimental cryptographic construction that has NOT been reviewed by anyone outside this repository. DO NOT use in production systems protecting sensitive data.**
+
+**Versions before 2.0.0 (and the TypeScript implementation) are broken:** the
+KEM shared secret could be recovered from the public key and ciphertext alone,
+and signatures could be forged by anyone holding the public key. See
+[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the reproduced attacks,
+a claim-by-claim review of the original design, and what 2.0.0 changes.
+Keys, ciphertexts and signatures from earlier versions must be discarded.
 
 ## Overview
 
-kMOSAIC (Key Mosaic) is a post-quantum secure cryptographic framework that combines three distinct hard mathematical problems to provide defense-in-depth security:
+kMOSAIC 2.x is built on unstructured lattice assumptions:
 
-- **SLSS** - Sparse Lattice Subset Sum Problem
-- **TDD** - Tensor Decomposition Decisional Problem
-- **EGRW** - Expander Graph Random Walk Problem
+- **KEM / encryption**: plain LWE with sparse ternary secrets (the "SLSS"
+  component), one secret column per message bit, with a Fujisaki-Okamoto
+  transform for CCA security.
+- **Signatures**: the CRYSTALS-Dilithium / FIPS 204 construction over
+  unstructured matrices, with ML-DSA-65 and ML-DSA-87 parameter shapes.
+
+The original design advertised two further "hard problems", TDD (tensor
+decomposition) and EGRW (expander-graph walks). Neither contributes any
+security: their component ciphertexts are decryptable without the secret key
+and the EGRW group is small enough to search exhaustively. They remain in the
+KEM ciphertext layout only for continuity and are documented as such.
 
 ## Features
 
-- **Key Encapsulation Mechanism (KEM)**: Post-quantum secure key exchange
-- **Encryption/Decryption**: Hybrid encryption using KEM and AES-GCM (symmetric payload encryption)
-- **Digital Signatures**: Post-quantum secure signatures
-- **Parallel Execution**: Uses Go goroutines for improved performance
-- **Two Security Levels**: MOS_128 (128-bit) and MOS_256 (256-bit)
+- **Key Encapsulation Mechanism (KEM)**: LWE-based key exchange with implicit rejection
+- **Encryption/Decryption**: Hybrid encryption using KEM and AES-256-GCM
+- **Digital Signatures**: Fiat-Shamir-with-aborts lattice signatures
+- **Parallel Execution**: Uses Go goroutines for matrix operations
+- **Two Security Levels**: MOS_128 and MOS_256 (see "Security Levels" for what they mean)
 
 ## Installation
 
@@ -98,18 +113,27 @@ func main() {
 }
 ```
 
-## Benchmarks (Apple M2 Pro)
+## Performance and sizes (2.0.0, 4-core x86-64 container)
 
-| Operation       | MOS_128  | MOS_256  |
-| --------------- | -------- | -------- |
-| KEM KeyGen      | 6.29 ms  | 22.43 ms |
-| KEM Encapsulate | 0.32 ms  | 0.95 ms  |
-| KEM Decapsulate | 0.38 ms  | 1.06 ms  |
-| Sign KeyGen     | 6.22 ms  | 22.49 ms |
-| Sign            | 12.07 μs | 21.95 μs |
-| Verify          | 2.44 ms  | 9.13 ms  |
+| Operation       | MOS_128 | MOS_256 |
+| --------------- | ------- | ------- |
+| KEM KeyGen      | 36 ms   | 81 ms   |
+| KEM Encapsulate | 0.4 ms  | 0.8 ms  |
+| KEM Decapsulate | 0.8 ms  | 1.1 ms  |
+| Sign KeyGen     | 197 ms  | 221 ms  |
+| Sign            | 14 ms   | 27 ms   |
+| Verify          | 9 ms    | 10 ms   |
 
-_See [BenchmarkReport.md](BenchmarkReport.md) for comprehensive detailed benchmark results, performance analysis, and methodology._
+| Object               | MOS_128 | MOS_256 |
+| -------------------- | ------- | ------- |
+| KEM public key       | 449 KB  | 777 KB  |
+| KEM ciphertext       | 6.9 KB  | 11.3 KB |
+| Signature public key | 1.18 MB | 1.57 MB |
+| Signature            | 3.9 KB  | 5.4 KB  |
+
+Keys are large because the schemes are unstructured (no polynomial rings).
+The figures in [BenchmarkReport.md](BenchmarkReport.md) describe the broken
+1.x design and are kept for the record only.
 
 ## API Reference
 
@@ -151,8 +175,14 @@ valid := sign.Verify(&publicKey, message, signature)
 
 ## Security Levels
 
-- **MOS_128**: 128-bit post-quantum security
-- **MOS_256**: 256-bit post-quantum security
+The names are historical. Estimated strength under a core-SVP model (see
+SECURITY_ASSESSMENT.md §1.4 and §3 for the model and its limits):
+
+- **MOS_128**: KEM ≈ 2^146 quantum core-SVP (n = m = 768 LWE); signatures use the ML-DSA-65 shape (≈ 2^165).
+- **MOS_256**: KEM ≈ 2^236 quantum core-SVP (n = m = 1152 LWE); signatures use the ML-DSA-87 shape (≈ 2^229).
+
+These are estimates from this repository's own review, not from an external
+analysis, and hybrid attacks on the sparse secret were not modelled.
 
 ## Requirements
 
