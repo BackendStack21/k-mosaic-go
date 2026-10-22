@@ -155,33 +155,101 @@ func sampleUniform(seed []byte, nbits int) []uint64 {
 	return v
 }
 
+// ctEqInt returns -1 if a == b and 0 otherwise, without branching (a and b
+// must be non-negative).
+func ctEqInt(a, b int) int { return -int((uint64(a^b) - 1) >> 63) }
+
+// ctGtInt returns -1 if a > b and 0 otherwise, without branching (a and b
+// must be non-negative and below 2^30).
+func ctGtInt(a, b int) int { return -int(uint64(int64(b-a)) >> 63) }
+
 // sampleFixedWeight derives an nbits-bit canonical vector of Hamming weight
-// w from seed, choosing distinct positions by rejection sampling (no modulo
-// bias).
+// w from seed. See sampleFixedWeightPos.
 func sampleFixedWeight(seed []byte, nbits, w int) []uint64 {
+	v, pos := sampleFixedWeightPos(seed, nbits, w)
+	zeroInts(pos)
+	return v
+}
+
+// sampleFixedWeightPos derives an nbits-bit canonical vector of Hamming
+// weight w from seed and also returns its w positions (unsorted).
+//
+// The sampler is constant-time with respect to the seed: it reads exactly
+// 8·w bytes from SHAKE256(seed), maps the i-th 64-bit word x_i to
+// i + ⌊x_i·(nbits−i)/2^64⌋ with a multiply (bias below 2^-48, no division),
+// removes collisions with Sendrier's constant-time Fisher-Yates variant
+// (for i = w−1 down to 0, position i is replaced by i when it equals a
+// later position, which yields a uniformly random w-subset), and scatters
+// the positions into the bit vector by touching every word for every
+// position. Neither the control flow nor the memory addresses depend on
+// the seed.
+func sampleFixedWeightPos(seed []byte, nbits, w int) ([]uint64, []int) {
 	v := make([]uint64, words(nbits))
-	limit := (uint64(1) << 32) / uint64(nbits) * uint64(nbits)
+	pos := make([]int, w)
 	h := sha3.NewSHAKE256()
 	_, _ = h.Write(seed)
-	var buf [4 * 64]byte
-	count := 0
-	for count < w {
-		_, _ = h.Read(buf[:])
-		for off := 0; off+4 <= len(buf) && count < w; off += 4 {
-			x := uint64(binary.LittleEndian.Uint32(buf[off:]))
-			if x >= limit {
-				continue
-			}
-			p := int(x % uint64(nbits))
-			if !getBit(v, p) {
-				setBit(v, p)
-				count++
+	buf := make([]byte, 8*w)
+	_, _ = h.Read(buf)
+	h.Reset()
+	for i := range pos {
+		x := binary.LittleEndian.Uint64(buf[8*i:])
+		hi, _ := bits.Mul64(x, uint64(nbits-i))
+		pos[i] = i + int(hi)
+	}
+	clear(buf)
+	for i := w - 1; i >= 0; i-- {
+		found := 0
+		pi := pos[i]
+		for _, pj := range pos[i+1:] {
+			found |= ctEqInt(pj, pi)
+		}
+		pos[i] = (found & i) | (^found & pi)
+	}
+	for _, p := range pos {
+		wi := p >> 6
+		bit := uint64(1) << (uint(p) & 63)
+		for k := range v {
+			v[k] |= uint64(int64(ctEqInt(k, wi))) & bit
+		}
+	}
+	return v, pos
+}
+
+// ctSortInts sorts a (non-negative entries below 2^30) in place with a
+// bitonic sorting network: the sequence of compare-exchange operations and
+// the memory accesses depend only on len(a), not on the values.
+func ctSortInts(a []int) {
+	n := len(a)
+	m := 1
+	for m < n {
+		m <<= 1
+	}
+	b := make([]int, m)
+	copy(b, a)
+	for i := n; i < m; i++ {
+		b[i] = 1 << 30 // sentinel above every valid position (N < 2^30)
+	}
+	for k := 2; k <= m; k <<= 1 {
+		for j := k >> 1; j > 0; j >>= 1 {
+			for i := 0; i < m; i++ {
+				l := i ^ j
+				if l <= i {
+					continue // depends only on the indices
+				}
+				x, y := b[i], b[l]
+				var swap int
+				if i&k == 0 {
+					swap = ctGtInt(x, y) // ascending run
+				} else {
+					swap = ctGtInt(y, x) // descending run
+				}
+				d := swap & (x ^ y)
+				b[i], b[l] = x^d, y^d
 			}
 		}
 	}
-	clear(buf[:])
-	h.Reset()
-	return v
+	copy(a, b[:n])
+	zeroInts(b)
 }
 
 // weight returns the Hamming weight of v.
@@ -193,9 +261,9 @@ func weight(v []uint64) int {
 	return n
 }
 
-// bitsToBytes serializes the low nbits bits of v (little-endian). A vector
-// shorter than nbits is zero-padded so that malformed inputs serialize
-// without panicking.
+// bitsToBytes serializes the low nbits bits of v (little-endian), clearing
+// any padding bits. A vector shorter than nbits is zero-padded so that
+// malformed inputs serialize without panicking.
 func bitsToBytes(v []uint64, nbits int) []byte {
 	nb := (nbits + 7) / 8
 	size := len(v) * 8
@@ -205,6 +273,11 @@ func bitsToBytes(v []uint64, nbits int) []byte {
 	out := make([]byte, size)
 	for i, w := range v {
 		binary.LittleEndian.PutUint64(out[i*8:], w)
+	}
+	// Clear the padding bits of the last byte so that the output is always
+	// canonical (bytesToBits rejects non-zero padding).
+	if nbits%8 != 0 && nb > 0 {
+		out[nb-1] &= byte(1<<(uint(nbits)%8)) - 1
 	}
 	return out[:nb]
 }

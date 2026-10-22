@@ -10,11 +10,18 @@ import (
 	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
+// cloneSig deep-copies every field of a signature, so that tampering with
+// the clone cannot touch the original and an untouched clone still verifies.
 func cloneSig(sig *kmosaic.MOSAICSignature) *kmosaic.MOSAICSignature {
 	return &kmosaic.MOSAICSignature{
-		Lattice: kmosaic.LatticeSignature{Challenge: append([]byte{}, sig.Lattice.Challenge...), Z: append([]int32{}, sig.Lattice.Z...)},
-		MQ:      kmosaic.MQSignature{S: append([]byte{}, sig.MQ.S...), Salt: append([]byte{}, sig.MQ.Salt...)},
-		Hash:    kmosaic.HashSignature{Data: append([]byte{}, sig.Hash.Data...)},
+		Nonce: append([]byte{}, sig.Nonce...),
+		Lattice: kmosaic.LatticeSignature{
+			Challenge: append([]byte{}, sig.Lattice.Challenge...),
+			Z:         append([]int32{}, sig.Lattice.Z...),
+			Hint:      append([]uint16{}, sig.Lattice.Hint...),
+		},
+		MQ:   kmosaic.MQSignature{S: append([]byte{}, sig.MQ.S...), Salt: append([]byte{}, sig.MQ.Salt...)},
+		Hash: kmosaic.HashSignature{Data: append([]byte{}, sig.Hash.Data...)},
 	}
 }
 
@@ -48,7 +55,12 @@ func TestRoundTripAllLevels(t *testing.T) {
 				t.Fatal("wrong message accepted")
 			}
 
-			// Every component must be checked: tamper with each one.
+			// Every component must be checked: tamper with each one. The
+			// untouched clone must verify, otherwise the tamper checks
+			// below would pass for the wrong reason.
+			if !Verify(&kp.PublicKey, msg, cloneSig(sig)) {
+				t.Fatal("cloned signature rejected: cloneSig is incomplete")
+			}
 			bad := cloneSig(sig)
 			bad.Lattice.Z[1]++
 			if Verify(&kp.PublicKey, msg, bad) {

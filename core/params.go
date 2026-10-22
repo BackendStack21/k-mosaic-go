@@ -33,9 +33,12 @@ var CodeHQC256 = kmosaic.CodeParams{
 
 // MOS128Params is the KEM parameter set for the MOS-128 level.
 //
-// SLSS: n = m = 768, q = 12289, σ = 3.19, sparse ternary secrets of weight 192
-// estimate at roughly 2^160 classical / 2^145 quantum core-SVP (primal uSVP
-// model) for both the key and ciphertext LWE instances.
+// SLSS: n = m = 768, q = 12289, centered binomial noise with η = 20
+// (σ = √10 ≈ 3.16), sparse ternary secrets of weight 192. This repository's
+// own core-SVP model (docs/estimator) puts the key and ciphertext LWE
+// instances at about 2^160 classical / 2^146 quantum (primal), with sparse-
+// secret hybrid attacks gaining under two bits: NIST level 1, not level 3.
+// These figures have not been checked with the Lattice Estimator.
 var MOS128Params = kmosaic.MOSAICParams{
 	Level: kmosaic.MOS128,
 	SLSS: kmosaic.SLSSParams{
@@ -53,8 +56,11 @@ var MOS128Params = kmosaic.MOSAICParams{
 
 // MOS256Params is the KEM parameter set for the MOS-256 level.
 //
-// SLSS: n = m = 1152, w = 288 estimate at roughly 2^260 classical / 2^236
-// quantum core-SVP.
+// SLSS: n = m = 1152, w = 288, η = 20. The repository's own core-SVP model
+// (docs/estimator) gives about 2^259 classical / 2^235 quantum (primal);
+// the idealised sparse-secret hybrid lowers the classical figure to about
+// 2^251. Comparable to ML-KEM-1024 (level 5) under the same model, not
+// checked with the Lattice Estimator.
 var MOS256Params = kmosaic.MOSAICParams{
 	Level: kmosaic.MOS256,
 	SLSS: kmosaic.SLSSParams{
@@ -224,6 +230,9 @@ func ValidateCodeParams(p kmosaic.CodeParams) error {
 	if p.N <= 0 || p.N1 <= 0 || p.K <= 0 || p.Delta <= 0 || p.Mult <= 0 {
 		return errors.New("code parameters must be positive")
 	}
+	if p.N > 1<<24 {
+		return errors.New("code ring length too large")
+	}
 	if !isPrime(p.N) {
 		return errors.New("code ring length must be prime")
 	}
@@ -268,7 +277,7 @@ func ValidateLatticeSignParams(p kmosaic.LatticeSignParams) error {
 	if p.D != 13 {
 		return errors.New("d must be 13")
 	}
-	if p.Omega <= 0 || p.Omega > p.M {
+	if p.Omega <= 0 || p.Omega > p.M || p.Omega > 255 {
 		return errors.New("omega out of range")
 	}
 	if p.CTildeSize < 32 || p.CTildeSize > 64 {
@@ -282,6 +291,9 @@ func ValidateMQParams(p kmosaic.MQParams) error {
 	if p.M <= 0 || p.N <= 2*p.M {
 		return errors.New("UOV requires 0 < m and n > 2m")
 	}
+	if p.N > 512 {
+		return errors.New("UOV n must be at most 512")
+	}
 	return nil
 }
 
@@ -290,14 +302,14 @@ func ValidateHashSignParams(p kmosaic.HashSignParams) error {
 	if p.N != 16 && p.N != 24 && p.N != 32 {
 		return errors.New("SLH-DSA n must be 16, 24 or 32")
 	}
-	if p.D <= 0 || p.H <= 0 || p.H%p.D != 0 || p.H/p.D > 32 {
-		return errors.New("SLH-DSA requires d | h with h/d <= 32")
+	if p.D <= 0 || p.D > 64 || p.H <= 0 || p.H%p.D != 0 || p.H/p.D > 16 {
+		return errors.New("SLH-DSA requires d <= 64 and d | h with h/d <= 16")
 	}
 	if p.H-p.H/p.D > 64 {
 		return errors.New("SLH-DSA tree index must fit in 64 bits")
 	}
-	if p.A <= 0 || p.A > 32 || p.K <= 0 {
-		return errors.New("SLH-DSA FORS parameters out of range")
+	if p.A <= 0 || p.A > 16 || p.K <= 0 || p.K > 64 {
+		return errors.New("SLH-DSA FORS parameters out of range (a <= 16, k <= 64)")
 	}
 	if p.LgW != 4 {
 		return errors.New("SLH-DSA lg_w must be 4")
@@ -334,7 +346,7 @@ func isPrime(n int) bool {
 		return false
 	}
 	// Check divisibility by numbers of the form 6k±1
-	for i := 5; i*i <= n; i += 6 {
+	for i := 5; i <= n/i; i += 6 { // i <= n/i avoids overflowing i*i
 		if n%i == 0 || n%(i+2) == 0 {
 			return false
 		}

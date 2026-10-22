@@ -17,8 +17,10 @@
 // The modulus is fixed at q = 12289 and every reduction of secret-dependent
 // data is a reduction by that compile-time constant, which the compiler turns
 // into a multiply-and-shift (no hardware division, whose latency depends on
-// its operands). Decryption touches every secret coefficient in the same
-// order regardless of its value.
+// its operands). Key generation, encryption and decryption touch every
+// coefficient in the same order regardless of secret values: the sparse
+// secrets are sampled by a constant-time sampler and multiplied densely, so
+// no memory address or loop count depends on them.
 //
 // # Decryption failure analysis
 //
@@ -214,64 +216,86 @@ func sampleMatrix(seed []byte, m, n int) []int32 {
 	return A
 }
 
-// sampleSparse draws a ternary vector of length len(v) with exactly w
-// non-zero entries from SHAKE256(seed) and writes it into v, which must be
-// all zero on entry. The first ⌈w/8⌉ output bytes are sign bits (bit k gives
-// the sign of the k-th selected position: 1 → +1, 0 → −1); the rest is a
-// stream of 32-bit little-endian candidates mapped to [0, n) with Lemire's
-// multiply-and-reject method (unbiased, no division by n), skipping
-// positions already chosen. signs is scratch space of capacity ⌈w/8⌉.
-func sampleSparse(h *sha3.SHAKE, seed []byte, w int, v []int8, signs []byte) {
-	n := len(v)
-	h.Reset()
-	_, _ = h.Write(seed)
-	signs = signs[:(w+7)/8]
-	_, _ = h.Read(signs)
-
-	var buf [shakeRate]byte
-	off := len(buf)
-	thresh := -uint32(n) % uint32(n) // 2^32 mod n; n is public
-	for k := 0; k < w; {
-		if off+4 > len(buf) {
-			_, _ = h.Read(buf[:])
-			off = 0
+// ctSortU64 sorts a in place with a bitonic sorting network. len(a) must be
+// a power of two and every entry must be below 2^63. The sequence of
+// compare-exchange operations and the memory accesses depend only on
+// len(a), never on the values.
+func ctSortU64(a []uint64) {
+	m := len(a)
+	for k := 2; k <= m; k <<= 1 {
+		for j := k >> 1; j > 0; j >>= 1 {
+			for i := 0; i < m; i++ {
+				l := i ^ j
+				if l <= i {
+					continue // depends only on the indices
+				}
+				x, y := a[i], a[l]
+				var swap uint64
+				if i&k == 0 {
+					swap = -((y - x) >> 63) // x > y: ascending run
+				} else {
+					swap = -((x - y) >> 63) // x < y: descending run
+				}
+				d := swap & (x ^ y)
+				a[i], a[l] = x^d, y^d
+			}
 		}
-		x := binary.LittleEndian.Uint32(buf[off:])
-		off += 4
-		prod := uint64(x) * uint64(n)
-		if uint32(prod) < thresh {
-			continue
-		}
-		p := int(prod >> 32)
-		if v[p] != 0 {
-			continue
-		}
-		v[p] = int8(2*((signs[k>>3]>>(k&7))&1)) - 1
-		k++
 	}
-	clear(buf[:])
-	clear(signs)
 }
 
-// splitTernary scans the ternary vector v (with w non-zero entries) and
-// writes the positions of its +1 entries in ascending order to out[:np] and
-// those of its −1 entries in descending order to out[np:w]; it returns np.
-// out must have length w+1 (out[w] is scratch). The scan is branch-free and
-// touches every entry of v, so its timing does not depend on v.
-func splitTernary(v []int8, w int, out []int32) int {
-	out = out[:w+1]
-	np, nm := 0, w
-	for i, x := range v {
-		b := uint8(x)
-		isM := int(b >> 7)
-		isP := int(b&1) &^ isM
-		idx := w ^ ((w ^ np) & -isP) ^ ((w ^ (nm - 1)) & -isM)
-		out[idx] = int32(i)
-		np += isP
-		nm -= isM
+// sampleSparse draws a uniformly random ternary vector of length n = len(v)
+// with exactly w non-zero entries from SHAKE256(seed) and writes it into v.
+// keys is scratch space of length at least the smallest power of two that is
+// >= n.
+//
+// The sampler is the sort-based constant-time method used by NTRU and
+// Classic McEliece: every slot k receives a 61-bit random key with its low
+// two bits carrying a value (the first w slots hold ±1, encoded 1 and 2; the
+// rest hold 0); the slots are then sorted by key with a bitonic network and
+// the values are read off in sorted order. Sorting distinct random keys is
+// a uniformly random permutation, so the non-zero entries land on a
+// uniformly random w-subset (two keys collide with probability below
+// 2^-50). The XOF output length, the control flow and the memory addresses
+// depend only on n and w, never on the seed.
+func sampleSparse(h *sha3.SHAKE, seed []byte, w int, v []int8, keys []uint64) {
+	n := len(v)
+	m := 1
+	for m < n {
+		m <<= 1
 	}
-	out[w] = 0
-	return np
+	keys = keys[:m]
+	h.Reset()
+	_, _ = h.Write(seed)
+	buf := make([]byte, 8*n+(n+7)/8) // keys, then one sign bit per slot
+	_, _ = h.Read(buf)
+	signs := buf[8*n:]
+	for k := 0; k < n; k++ {
+		key := binary.LittleEndian.Uint64(buf[8*k:]) >> 3 << 2 // 61 random bits, < 2^63
+		// value: 0 for k >= w; 1 (+1) or 2 (−1) for k < w, from the sign bit.
+		inW := uint64(int64(k-w) >> 63) // all ones iff k < w
+		sign := uint64(signs[k>>3]>>(k&7)) & 1
+		key |= inW & (2 - sign)
+		keys[k] = key
+	}
+	for k := n; k < m; k++ {
+		keys[k] = 1<<63 - 1 // sentinel: sorts after every real key
+	}
+	ctSortU64(keys)
+	for k := 0; k < n; k++ {
+		c := keys[k] & 3
+		v[k] = int8(c&1) - int8(c>>1)
+	}
+	clear(buf)
+	clear(keys)
+}
+
+// sampleScratch returns the scratch length sampleSparse needs for n.
+func sampleScratch(n int) int {
+	m := 1
+	for m < n {
+		m <<= 1
+	}
+	return m
 }
 
 // sampleSparseVector returns the dense ternary vector drawn by sampleSparse,
@@ -281,7 +305,7 @@ func sampleSparseVector(seed []byte, n, w int) []int8 {
 		return nil
 	}
 	v := make([]int8, n)
-	sampleSparse(sha3.NewSHAKE256(), seed, w, v, make([]byte, (w+7)/8))
+	sampleSparse(sha3.NewSHAKE256(), seed, w, v, make([]uint64, sampleScratch(n)))
 	return v
 }
 
@@ -361,14 +385,14 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 	}
 	per := (l + workers - 1) / workers
 
-	// Each worker owns a block of columns. It first samples the sparse
-	// secrets of its columns as ±1 position lists, then streams A once, row
-	// by row, computing ⟨A_i, s_j⟩ for all its columns while the row is in
-	// cache, and finally adds the errors and reduces.
+	// Each worker owns a block of columns. It samples the sparse secrets of
+	// its columns, then streams A once, row by row, computing the dense
+	// products ⟨A_i, s_j⟩ for all its columns while the row is in cache, and
+	// finally adds the errors and reduces.
 	//
-	// The loads A_i[p] are at secret positions p. This is a cache-timing
-	// channel at cache-line granularity during key generation (a one-time
-	// operation per key); Decrypt does not index memory by secret data.
+	// The products run over every coefficient of every secret column with a
+	// multiply, so neither the control flow nor the memory addresses depend
+	// on the secret (the sparse structure is not exploited for speed).
 	var wg sync.WaitGroup
 	for start := 0; start < l; start += per {
 		end := min(start+per, l)
@@ -376,14 +400,13 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 		go func() {
 			defer wg.Done()
 			cols := end - start
-			pos := make([]int32, cols*w+1)
-			nplus := make([]int, cols)
-			signs := make([]byte, (w+7)/8)
+			keys := make([]uint64, sampleScratch(n))
 			cs := make([]byte, len(seed)+4)
 			h := sha3.NewSHAKE256()
+			// Dense int32 copies of this worker's secret columns.
+			sc := make([]int32, cols*n)
 			defer func() {
-				utils.ZeroizeInt32(pos)
-				clear(nplus)
+				utils.ZeroizeInt32(sc)
 				utils.Zeroize(cs)
 			}()
 
@@ -391,54 +414,69 @@ func KeyGen(params kmosaic.SLSSParams, seed []byte) (*kmosaic.SLSSKeyPair, error
 				j := start + c
 				secretSeed := utils.HashWithDomain(DomainSecret, columnSeed(cs, seed, j))
 				sj := S[j*n : (j+1)*n]
-				sampleSparse(h, secretSeed, w, sj, signs)
-				// Column c's list is pos[c*w:(c+1)*w]; the scratch slot
-				// pos[(c+1)*w] is overwritten by the next column.
-				nplus[c] = splitTernary(sj, w, pos[c*w:(c+1)*w+1])
+				sampleSparse(h, secretSeed, w, sj, keys)
+				for i, x := range sj {
+					sc[c*n+i] = int32(x)
+				}
 				utils.Zeroize(secretSeed)
 			}
 
-			// Four rows at a time: each position is loaded once and used
-			// for four independent sums.
+			// Register-blocked dense product: four rows of A against two
+			// secret columns at a time (six loads per eight multiply-adds).
+			dot2 := func(row, s0, s1 []int32) (int32, int32) {
+				s0, s1 = s0[:len(row)], s1[:len(row)]
+				var x0, x1 int32
+				for k, a := range row {
+					x0 += a * s0[k]
+					x1 += a * s1[k]
+				}
+				return x0, x1
+			}
 			i := 0
 			for ; i+4 <= m; i += 4 {
 				r0 := A[i*n : (i+1)*n]
 				r1 := A[(i+1)*n:][:len(r0)]
 				r2 := A[(i+2)*n:][:len(r0)]
 				r3 := A[(i+3)*n:][:len(r0)]
-				for c := 0; c < cols; c++ {
-					lst := pos[c*w : (c+1)*w]
-					np := nplus[c]
-					var x0, x1, x2, x3 int32
-					for _, p := range lst[:np] {
-						x0 += r0[p]
-						x1 += r1[p]
-						x2 += r2[p]
-						x3 += r3[p]
+				c := 0
+				for ; c+2 <= cols; c += 2 {
+					s0 := sc[c*n:][:len(r0)]
+					s1 := sc[(c+1)*n:][:len(r0)]
+					var x00, x01, x10, x11, x20, x21, x30, x31 int32
+					for k, b0 := range s0 {
+						b1 := s1[k]
+						a0, a1, a2, a3 := r0[k], r1[k], r2[k], r3[k]
+						x00 += a0 * b0
+						x01 += a0 * b1
+						x10 += a1 * b0
+						x11 += a1 * b1
+						x20 += a2 * b0
+						x21 += a2 * b1
+						x30 += a3 * b0
+						x31 += a3 * b1
 					}
-					for _, p := range lst[np:] {
-						x0 -= r0[p]
-						x1 -= r1[p]
-						x2 -= r2[p]
-						x3 -= r3[p]
-					}
-					tj := T[(start+c)*m+i:][:4]
-					tj[0], tj[1], tj[2], tj[3] = x0, x1, x2, x3
+					t0 := T[(start+c)*m+i:][:4]
+					t1 := T[(start+c+1)*m+i:][:4]
+					t0[0], t0[1], t0[2], t0[3] = x00, x10, x20, x30
+					t1[0], t1[1], t1[2], t1[3] = x01, x11, x21, x31
+				}
+				for ; c < cols; c++ {
+					s0 := sc[c*n:][:len(r0)]
+					x0, x1 := dot2(r0, s0, s0)
+					x2, _ := dot2(r1, s0, s0)
+					x3, _ := dot2(r2, s0, s0)
+					x4, _ := dot2(r3, s0, s0)
+					_ = x1
+					t0 := T[(start+c)*m+i:][:4]
+					t0[0], t0[1], t0[2], t0[3] = x0, x2, x3, x4
 				}
 			}
 			for ; i < m; i++ {
 				row := A[i*n : (i+1)*n]
 				for c := 0; c < cols; c++ {
-					lst := pos[c*w : (c+1)*w]
-					np := nplus[c]
-					var sum int32
-					for _, p := range lst[:np] {
-						sum += row[p]
-					}
-					for _, p := range lst[np:] {
-						sum -= row[p]
-					}
-					T[(start+c)*m+i] = sum
+					s0 := sc[c*n:][:len(row)]
+					x0, _ := dot2(row, s0, s0)
+					T[(start+c)*m+i] = x0
 				}
 			}
 
@@ -469,34 +507,30 @@ func MessageSize(params kmosaic.SLSSParams) int {
 	return params.L / 8
 }
 
-// addRows adds sign·A_p to acc for every row index p in rows, where A is
-// row-major with len(acc) columns. Rows are combined four at a time so that
-// acc is loaded and stored once per four rows.
-func addRows(acc, A []int32, rows []int32, sign int32) {
+// addScaledRows adds r[p]·A_p to acc for every row p of A (row-major with
+// len(acc) columns), four rows at a time so that acc is loaded and stored
+// once per four rows. Every row is read regardless of r[p], so neither the
+// control flow nor the memory addresses depend on r.
+func addScaledRows(acc, A []int32, r []int8) {
 	n := len(acc)
-	k := 0
-	for ; k+4 <= len(rows); k += 4 {
-		r0 := A[int(rows[k])*n : int(rows[k])*n+n]
-		r1 := A[int(rows[k+1])*n : int(rows[k+1])*n+n]
-		r2 := A[int(rows[k+2])*n : int(rows[k+2])*n+n]
-		r3 := A[int(rows[k+3])*n : int(rows[k+3])*n+n]
-		r1, r2, r3 = r1[:len(r0)], r2[:len(r0)], r3[:len(r0)]
-		a := acc[:len(r0)]
-		if sign > 0 {
-			for i, x := range r0 {
-				a[i] += x + r1[i] + r2[i] + r3[i]
-			}
-		} else {
-			for i, x := range r0 {
-				a[i] -= x + r1[i] + r2[i] + r3[i]
-			}
-		}
-	}
-	for ; k < len(rows); k++ {
-		r0 := A[int(rows[k])*n : int(rows[k])*n+n]
+	p := 0
+	for ; p+4 <= len(r); p += 4 {
+		r0 := A[p*n : p*n+n]
+		r1 := A[(p+1)*n:][:len(r0)]
+		r2 := A[(p+2)*n:][:len(r0)]
+		r3 := A[(p+3)*n:][:len(r0)]
+		c0, c1, c2, c3 := int32(r[p]), int32(r[p+1]), int32(r[p+2]), int32(r[p+3])
 		a := acc[:len(r0)]
 		for i, x := range r0 {
-			a[i] += sign * x
+			a[i] += c0*x + c1*r1[i] + c2*r2[i] + c3*r3[i]
+		}
+	}
+	for ; p < len(r); p++ {
+		r0 := A[p*n : p*n+n]
+		c0 := int32(r[p])
+		a := acc[:len(r0)]
+		for i, x := range r0 {
+			a[i] += c0 * x
 		}
 	}
 }
@@ -505,9 +539,11 @@ func addRows(acc, A []int32, rows []int32, sign int32) {
 // least 32 bytes) deterministically selects the ephemeral values, so the
 // ciphertext is a deterministic function of (pk, message, randomness).
 //
-// The rows of A and entries of each t_j that are read are selected by the
-// ephemeral secret r; as in KeyGen this is a cache-line-granular memory
-// access pattern that depends on r.
+// Encryption runs in constant time with respect to the message and the
+// randomness: the sparse vector r is sampled with a sorting network, and
+// the products Aᵀ·r and ⟨t_j, r⟩ run over every coefficient with a
+// multiply instead of gathering the rows that r selects. This matters because
+// decapsulation re-encrypts the decrypted secret.
 func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams, randomness []byte) (*kmosaic.SLSSCiphertext, error) {
 	if len(randomness) < 32 {
 		return nil, errors.New("randomness must be at least 32 bytes")
@@ -531,9 +567,7 @@ func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams
 	e1Seed := utils.HashWithDomain(DomainError1, randomness)
 	e2Seed := utils.HashWithDomain(DomainError2, randomness)
 	r := make([]int8, m)
-	pos := make([]int32, w+1)
-	sampleSparse(sha3.NewSHAKE256(), rSeed, w, r, make([]byte, (w+7)/8))
-	np := splitTernary(r, w, pos)
+	sampleSparse(sha3.NewSHAKE256(), rSeed, w, r, make([]uint64, sampleScratch(m)))
 	e1 := utils.SampleCenteredBinomial(e1Seed, n, eta)
 	e2 := utils.SampleCenteredBinomial(e2Seed, l, eta)
 	defer func() {
@@ -541,15 +575,13 @@ func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams
 		utils.Zeroize(e1Seed)
 		utils.Zeroize(e2Seed)
 		utils.ZeroizeInt8(r)
-		utils.ZeroizeInt32(pos)
 		utils.ZeroizeInt32(e1)
 		utils.ZeroizeInt32(e2)
 	}()
 
 	// u = Compress_DU(Aᵀ·r + e1). |accumulator| ≤ W·q < 2^30.
 	u := make([]int32, n)
-	addRows(u, pk.A, pos[:np], 1)
-	addRows(u, pk.A, pos[np:w], -1)
+	addScaledRows(u, pk.A, r)
 	e1 = e1[:len(u)]
 	for i := range u {
 		u[i] = compress(mod32(u[i]+e1[i]), du)
@@ -557,15 +589,12 @@ func Encrypt(pk kmosaic.SLSSPublicKey, message []byte, params kmosaic.SLSSParams
 
 	// v_j = Compress_DV(⟨t_j, r⟩ + e2_j + bit_j·⌊q/2⌋)
 	v := make([]int32, l)
-	plus, minus := pos[:np], pos[np:w]
 	for j := range v {
 		tj := pk.T[j*m : (j+1)*m]
+		tj = tj[:len(r)]
 		var sum int32
-		for _, p := range plus {
-			sum += tj[p]
-		}
-		for _, p := range minus {
-			sum -= tj[p]
+		for p, x := range r {
+			sum += int32(x) * tj[p]
 		}
 		bit := int32((message[j/8] >> (j % 8)) & 1)
 		v[j] = compress(mod32(sum+e2[j]+bit*(q/2)), dv)
@@ -745,6 +774,25 @@ func SerializeCiphertext(ct *kmosaic.SLSSCiphertext, params kmosaic.SLSSParams) 
 	packBits(out[:uLen], ct.U, uint(params.DU))
 	packBits(out[uLen:], ct.V, uint(params.DV))
 	return out
+}
+
+// CiphertextCanonical reports whether ct has the shape that Encrypt under
+// params produces and every coefficient in its compressed range, i.e.
+// whether it is the unique in-memory form of its serialization. It scans
+// every coefficient regardless of value.
+func CiphertextCanonical(ct *kmosaic.SLSSCiphertext, params kmosaic.SLSSParams) bool {
+	if ct == nil || checkParams(params) != nil || len(ct.U) != params.N || len(ct.V) != params.L {
+		return false
+	}
+	var bad uint32
+	maskU, maskV := ^uint32(0)<<uint(params.DU), ^uint32(0)<<uint(params.DV)
+	for _, x := range ct.U {
+		bad |= uint32(x) & maskU
+	}
+	for _, x := range ct.V {
+		bad |= uint32(x) & maskV
+	}
+	return bad == 0
 }
 
 // DeserializeCiphertext parses a ciphertext produced by SerializeCiphertext.

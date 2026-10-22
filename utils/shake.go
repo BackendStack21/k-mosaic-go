@@ -22,6 +22,9 @@ var shake256Pool = sync.Pool{
 // It takes an input byte slice and generates an output of the specified length.
 // This is used for generating pseudo-random bytes from a seed.
 func Shake256(input []byte, outputLen int) []byte {
+	if outputLen < 0 {
+		return nil
+	}
 	h := shake256Pool.Get().(*sha3.SHAKE)
 	defer func() {
 		h.Reset()
@@ -97,6 +100,9 @@ func HashConcat(inputs ...[]byte) []byte {
 // It works like HashWithDomain but produces an output of arbitrary length.
 // Panics if domain is longer than 255 bytes.
 func Shake256WithDomain(domain string, data []byte, outputLen int) []byte {
+	if outputLen < 0 {
+		return nil
+	}
 	domainBytes := []byte(domain)
 	if len(domainBytes) > 255 {
 		panic("domain string must be at most 255 bytes")

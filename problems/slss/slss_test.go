@@ -442,8 +442,8 @@ func TestSerializeSecretKey(t *testing.T) {
 // caught.
 func TestDeterminism(t *testing.T) {
 	want := map[kmosaic.SecurityLevel][3]string{
-		kmosaic.MOS_128: {"0431a22d1d0b5fe6f1d4b1e0f2ae7ed5", "bed8584a7399aba377b1a08cf4ea52ad", "101e5eb6d23c81ff45b26663e6f829e8"},
-		kmosaic.MOS_256: {"a0d19943be770cfa207e061d233843c1", "0735f71387df256e6f0a09e89333b2af", "c761b49ffbd053f425068cd80a2340b1"},
+		kmosaic.MOS_128: {"74a9997b58a3356957979522c6438491", "10fc7e72816b8b8e86b5167aef2afc0c", "7bb0ab5a3a6cca4bbefa81b4e25cc20d"},
+		kmosaic.MOS_256: {"840255601e81bc0597889aad592dc7d0", "12cbcbde0885f8daa776dc2efabe484b", "621ee37031bbac839ed0c946ec5610df"},
 	}
 	for _, level := range levels {
 		t.Run(string(level), func(t *testing.T) {

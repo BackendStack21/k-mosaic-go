@@ -145,9 +145,14 @@ with a clear error.
 | `--input`      | `-i`   | Message file; if neither `--message` nor `--input` is given, stdin is read   |
 | `--timing`     | `-t`   | Print timing information to stderr                                           |
 | `--verbose`    | `-v`   | Verbose output to stderr                                                     |
+| `--iterations` | `-n`   | `benchmark` only: number of iterations (default 10)                          |
 
 Option values are never interpreted as flags: `--message -v` signs the
-literal text `-v`.
+literal text `-v`, and `--message ""` signs the empty message. Unknown or
+misspelled options and stray arguments are errors (exit code 2), so a typo
+such as `--ouput` cannot silently send a secret key to stdout. Input files
+and stdin are limited to 100 MiB; larger input is an error, never silently
+truncated.
 
 ### KEM Operations
 
@@ -283,8 +288,13 @@ Benchmark complete!
 | Code | Meaning                                                   |
 | ---- | --------------------------------------------------------- |
 | 0    | Success; for `sign verify`, the signature is valid        |
-| 1    | Signature invalid, or decryption failed authentication    |
-| 2    | Usage error, unreadable input, or any other runtime error |
+| 1    | A well-formed signature that does not verify, or decryption failed authentication |
+| 2    | Usage error, unreadable or malformed input (including a truncated signature or ciphertext), or any other runtime error |
+
+`kem decapsulate` cannot detect tampering: a modified ciphertext yields an
+unrelated shared secret with exit code 0 (implicit rejection). Use
+`kem encrypt` / `kem decrypt`, whose AES-GCM tag fails with exit code 1,
+when you need to know.
 
 ```bash
 set +e
@@ -393,16 +403,22 @@ Serialized sizes before base64 encoding (JSON files are about 4/3 larger):
 | Signature secret key | 1.0 MB  | 1.2 MB  |
 | Signature            | 20.6 KB | 54.8 KB |
 
-Typical timings on a 4-core x86-64 container: KEM key generation 17–33 ms,
-encapsulation under 1 ms, decapsulation 1.4–2.2 ms; signature key generation
-0.16–0.3 s, signing 18–47 ms, verification 3.3–4.4 ms. Loading a signing key
-costs 21–45 ms because the lattice matrix is re-expanded from its seed.
+Typical timings on a 4-core x86-64 container: KEM key generation 50–100 ms,
+encapsulation 1.5–2.2 ms, decapsulation about 2.4 ms; signature key
+generation 0.2–0.37 s, signing 22–50 ms, verification 3.7–4.4 ms. Loading a
+signing key costs 20–58 ms because the lattice matrix is re-expanded from its
+seed.
 
 ## Security Considerations
 
-- Protect `FILE` (the key pair): `chmod 600` is applied at creation; back it up
-  encrypted; never commit it to version control; never send it over an
-  unencrypted channel. Share only `FILE.pub`.
+- Protect `FILE` (the key pair): it is created with mode 0600 through a
+  private temporary file and an atomic rename (an existing file or symlink at
+  that path is replaced, never written through); back it up encrypted; never
+  commit it to version control; never send it over an unencrypted channel.
+  Share only `FILE.pub`.
+- The output of `kem encapsulate` contains the shared secret as well as the
+  ciphertext. Send the recipient only the `ciphertext` field, never the whole
+  file.
 - Decryption and signing need the secret key; verification and encryption need
   only the public key.
 - The CLI refuses to use a secret key with a public key it does not belong to.
@@ -416,11 +432,13 @@ shred -u keys-2026.json      # Linux; use `rm -P` or `srm` on macOS
 ```
 
 What kMOSAIC provides, and what it does not, is described in
-[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md): the KEM rests on
-unstructured LWE and quasi-cyclic syndrome decoding (both must break),
-signatures on unstructured lattices, multivariate quadratics and hash
-functions (all three must break). Side-channel hardening is incomplete and no
-external review has taken place.
+[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md): against cryptanalysis the
+KEM rests on unstructured LWE and quasi-cyclic syndrome decoding (both must
+break), signatures on unstructured lattices, multivariate quadratics and hash
+functions (all three must break). This gives no protection against
+implementation or side-channel attacks, side-channel hardening is incomplete
+(§6.3 of the assessment lists what remains), and no review outside this
+repository has taken place. Do not use it for anything that matters.
 
 ## Troubleshooting and FAQ
 

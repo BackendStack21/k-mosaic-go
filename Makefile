@@ -120,8 +120,10 @@ check: fmt vet test
 
 # Run the parser tests on a 32-bit target
 test-386:
-	@echo "Running parser tests with GOARCH=386..."
+	@echo "Vetting and testing with GOARCH=386..."
+	GOARCH=386 go vet ./...
 	GOARCH=386 go test ./internal/wire/ ./kem/ ./sign/ -run 'Deserialize|Truncated|Header|Huge'
+	GOARCH=386 go test ./core/ ./utils/ ./problems/qcsd/ ./problems/uov/ ./problems/slhdsa/
 
 # CI pipeline simulation
 ci: deps fmt vet test-race test-386 coverage

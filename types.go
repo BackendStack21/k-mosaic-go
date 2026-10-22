@@ -37,7 +37,8 @@ const (
 //
 // The public key is (A, T = A·S + E) with A ∈ Z_q^{M×N} expanded from a public
 // seed, S ∈ {-1,0,1}^{N×L} with W non-zero entries per column and E ∈ Z^{M×L}
-// discrete Gaussian. Each of the L secret columns protects one message bit.
+// centered binomial with parameter Eta (variance Eta/2). Each of the L secret
+// columns protects one message bit.
 type SLSSParams struct {
 	N   int `json:"n"`   // Secret dimension (columns of A)
 	M   int `json:"m"`   // Number of LWE samples (rows of A)

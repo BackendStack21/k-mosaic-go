@@ -6,8 +6,17 @@
 // the HQC construction). Recovering the ephemeral secret requires both
 // shares, so the scheme is IND-CPA as long as either component is, and the
 // Fujisaki-Okamoto transform (derandomization on the public key, re-encryption
-// check, implicit rejection, no early exits) lifts it to IND-CCA in the
-// random-oracle model.
+// check, implicit rejection) lifts it to IND-CCA in the classical
+// random-oracle model (quantum-accessible ROM security follows only from the
+// known non-tight FO results).
+//
+// Decapsulation rejects malformed shapes early (shapes are public); for
+// every well-shaped ciphertext it performs both decryptions, the
+// re-encryption and the comparison with the same control flow and the same
+// memory access pattern: the component samplers are constant-time and the
+// SLSS products are dense. The remaining known data-dependent memory access
+// is the window offset of the code component's sparse ring multiplication
+// (see package qcsd).
 //
 // Every serialized object starts with the self-describing header of
 // internal/wire, so deserialization needs no parameters.
@@ -16,7 +25,7 @@ package kem
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"errors"
+	"crypto/subtle"
 	"fmt"
 	"sync"
 
@@ -48,13 +57,17 @@ const (
 
 	// MaxComponentSize bounds any length prefix read during deserialization.
 	MaxComponentSize = 16 * 1024 * 1024
+
+	// MaxPlaintextSize is the largest plaintext Encrypt accepts: the
+	// AES-GCM limit of 2^32−2 blocks.
+	MaxPlaintextSize = (1<<32 - 2) * 16
 )
 
 // GenerateKeyPair generates a kMOSAIC key pair for the given security level.
 func GenerateKeyPair(level kmosaic.SecurityLevel) (*kmosaic.MOSAICKeyPair, error) {
 	params, err := core.GetParams(level)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
 	}
 	seed, err := utils.SecureRandomBytes(SeedSize)
 	if err != nil {
@@ -73,11 +86,8 @@ func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic
 	if err := core.ValidateParams(params); err != nil {
 		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
 	}
-	if _, err := core.GetParams(params.Level); err != nil {
-		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
-	}
-	if slss.MessageSize(params.SLSS) != shareSize || qcsd.MessageSize(params.Code) != shareSize {
-		return nil, fmt.Errorf("%w: components must encrypt 32-byte shares", kmosaic.ErrInvalidParams)
+	if err := checkKnownParams(params); err != nil {
+		return nil, err
 	}
 
 	slssSeed := utils.HashWithDomain(DomainSLSS, seed)
@@ -102,10 +112,11 @@ func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic
 	}()
 	wg.Wait()
 	if slssErr != nil {
-		return nil, slssErr
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, slssErr)
 	}
 	if codeErr != nil {
-		return nil, codeErr
+		utils.ZeroizeInt8(slssKP.SecretKey.S)
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, codeErr)
 	}
 
 	publicKey := kmosaic.MOSAICPublicKey{
@@ -128,8 +139,32 @@ func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic
 	return &kmosaic.MOSAICKeyPair{PublicKey: publicKey, SecretKey: secretKey}, nil
 }
 
+// checkKnownParams rejects any parameter set that is not exactly the
+// published set for its level, so that no caller can run the scheme with
+// weakened dimensions under a valid header.
+func checkKnownParams(params kmosaic.MOSAICParams) error {
+	if err := core.ValidateParams(params); err != nil {
+		return fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
+	}
+	known, err := core.GetParams(params.Level)
+	if err != nil || known != params {
+		return fmt.Errorf("%w: parameters do not match level %q", kmosaic.ErrInvalidParams, params.Level)
+	}
+	if slss.MessageSize(params.SLSS) != shareSize || qcsd.MessageSize(params.Code) != shareSize {
+		return fmt.Errorf("%w: components must encrypt 32-byte shares", kmosaic.ErrInvalidParams)
+	}
+	return nil
+}
+
 // PublicKeyHash returns the cached hash of pk, computing it if necessary.
+// The cache is trusted: keys produced by GenerateKeyPair or
+// DeserializePublicKey carry the correct hash, and a key struct edited by
+// hand (other fields changed, Hash kept) is not detected. Clear pk.Hash
+// after editing a key in memory to force recomputation.
 func PublicKeyHash(pk *kmosaic.MOSAICPublicKey) []byte {
+	if pk == nil {
+		return nil
+	}
 	if len(pk.Hash) == 32 {
 		return pk.Hash
 	}
@@ -148,17 +183,20 @@ func Encapsulate(pk *kmosaic.MOSAICPublicKey) (*kmosaic.EncapsulationResult, err
 
 // EncapsulateDeterministic encapsulates a caller-chosen 32-byte ephemeral
 // secret. It exists for known-answer tests and for the re-encryption step of
-// decapsulation; callers must never reuse an ephemeral secret.
+// decapsulation. Callers must never reuse an ephemeral secret, under one key
+// or across keys: whoever can decapsulate one of the resulting ciphertexts
+// recovers the ephemeral secret and with it every other shared secret (and
+// AES-GCM key and nonce) derived from it. Use Encapsulate.
 func EncapsulateDeterministic(pk *kmosaic.MOSAICPublicKey, ephemeralSecret []byte) (*kmosaic.EncapsulationResult, error) {
 	if pk == nil {
 		return nil, fmt.Errorf("%w: nil public key", kmosaic.ErrInvalidKey)
 	}
 	if len(ephemeralSecret) != SharedSecretSize {
-		return nil, errors.New("ephemeral secret must be 32 bytes")
+		return nil, fmt.Errorf("%w: ephemeral secret must be %d bytes", kmosaic.ErrInvalidParams, SharedSecretSize)
 	}
 	params := pk.Params
-	if slss.MessageSize(params.SLSS) != shareSize || qcsd.MessageSize(params.Code) != shareSize {
-		return nil, fmt.Errorf("%w: components must encrypt 32-byte shares", kmosaic.ErrInvalidParams)
+	if err := checkKnownParams(params); err != nil {
+		return nil, err
 	}
 
 	// Derandomize on the secret and the public key hash (FO transform).
@@ -197,14 +235,17 @@ func EncapsulateDeterministic(pk *kmosaic.MOSAICPublicKey, ephemeralSecret []byt
 	}()
 	wg.Wait()
 	if err1 != nil {
-		return nil, err1
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err1)
 	}
 	if err2 != nil {
-		return nil, err2
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err2)
 	}
 
 	ciphertext := kmosaic.MOSAICCiphertext{C1: *c1, C2: *c2}
 	ctBytes := SerializeCiphertext(&ciphertext, params)
+	if ctBytes == nil {
+		return nil, fmt.Errorf("%w: ciphertext could not be serialized", kmosaic.ErrInvalidKey)
+	}
 	sharedSecret := deriveSharedSecret(ephemeralSecret, ctBytes)
 	return &kmosaic.EncapsulationResult{SharedSecret: sharedSecret, Ciphertext: ciphertext}, nil
 }
@@ -218,26 +259,33 @@ func deriveSharedSecret(ephemeralSecret, ctBytes []byte) []byte {
 
 // Decapsulate recovers the shared secret from a ciphertext. The public key
 // must be the one matching sk (checked against the hash stored in sk).
-// Invalid ciphertexts yield a pseudorandom rejection value (implicit
-// rejection); the amount of work does not depend on where validation fails.
+// Malformed keys return ErrInvalidKey or ErrKeyMismatch. A ciphertext whose
+// shape or encoding is not the one Encapsulate produces (a public property)
+// yields the implicit-rejection value immediately; every other ciphertext
+// goes through both decryptions, re-encryption and a constant-time
+// selection, so the work and the control flow do not depend on secret data
+// or on which check failed.
 func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *kmosaic.MOSAICCiphertext) ([]byte, error) {
 	if sk == nil || pk == nil || ct == nil {
 		return nil, fmt.Errorf("%w: nil argument", kmosaic.ErrInvalidKey)
 	}
-	if len(sk.Seed) != SeedSize || len(sk.PublicKeyHash) != 32 {
+	if err := checkKnownParams(pk.Params); err != nil {
+		return nil, err
+	}
+	params := pk.Params
+	if !secretKeyShapeValid(sk, params) {
 		return nil, fmt.Errorf("%w: malformed secret key", kmosaic.ErrInvalidKey)
 	}
 	if !utils.ConstantTimeEqual(PublicKeyHash(pk), sk.PublicKeyHash) {
 		return nil, kmosaic.ErrKeyMismatch
 	}
-	params := pk.Params
 
-	if !ciphertextShapeValid(ct, params) {
-		// The shape of a ciphertext is public information; rejecting here
-		// reveals nothing about the key.
-		return implicitReject(sk, SerializeCiphertext(ct, params)), nil
-	}
 	ctBytes := SerializeCiphertext(ct, params)
+	if !slss.CiphertextCanonical(&ct.C1, params.SLSS) || !qcsd.CiphertextCanonical(&ct.C2, params.Code) {
+		// Shape and encoding are public information (a parsed ciphertext
+		// is always canonical); rejecting here reveals nothing about the key.
+		return implicitReject(sk, ctBytes), nil
+	}
 
 	var wg sync.WaitGroup
 	var m1, m2 []byte
@@ -257,8 +305,8 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 		utils.Zeroize(m2)
 	}()
 	if len(m1) != shareSize || len(m2) != shareSize {
-		// Only reachable through a key/parameter mismatch that shape
-		// validation already excludes; treated as a rejection.
+		// Not reachable: both decryptions return a share for every canonical
+		// ciphertext under a well-shaped key. Kept as a defensive rejection.
 		return implicitReject(sk, ctBytes), nil
 	}
 
@@ -268,16 +316,19 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 	}
 	defer utils.Zeroize(ephemeralSecret)
 
-	// Re-encrypt and compare without early exit; a code decoding failure is
-	// folded into the same constant-time selection.
-	valid := ok2
+	// Re-encrypt and compare the full serialized ciphertext byte for byte.
+	// This exact comparison is load-bearing: without the FO transform the
+	// XOR-share structure is malleable (flipping bit j of the SLSS share and
+	// the matching codeword bit of the code share yields a different
+	// ciphertext for the same ephemeral secret), and the shared secret also
+	// binds H(ct). Comparing decrypted shares instead, or dropping H(ct)
+	// from the key derivation, would break IND-CCA. A code decoding failure
+	// is folded into the same constant-time selection without branching.
 	reEnc, err := EncapsulateDeterministic(pk, ephemeralSecret)
 	if err != nil {
 		return nil, err
 	}
-	if !utils.ConstantTimeEqual(ctBytes, SerializeCiphertext(&reEnc.Ciphertext, params)) {
-		valid = 0
-	}
+	valid := ok2 & subtle.ConstantTimeCompare(ctBytes, SerializeCiphertext(&reEnc.Ciphertext, params))
 	rejectSecret := implicitReject(sk, ctBytes)
 	result := utils.ConstantTimeSelect(valid, reEnc.SharedSecret, rejectSecret)
 	utils.Zeroize(rejectSecret)
@@ -285,13 +336,17 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 	return result, nil
 }
 
-// ciphertextShapeValid reports whether every component of ct has the
-// dimensions that encapsulation under params produces.
-func ciphertextShapeValid(ct *kmosaic.MOSAICCiphertext, params kmosaic.MOSAICParams) bool {
-	if len(ct.C1.U) != params.SLSS.N || len(ct.C1.V) != params.SLSS.L {
+// secretKeyShapeValid reports whether sk has the public shape that key
+// generation under params produces (seed, public key hash and component
+// dimensions). It does not look at secret values.
+func secretKeyShapeValid(sk *kmosaic.MOSAICSecretKey, params kmosaic.MOSAICParams) bool {
+	if len(sk.Seed) != SeedSize || len(sk.PublicKeyHash) != 32 {
 		return false
 	}
-	if len(ct.C2.U) != (params.Code.N+63)/64 || len(ct.C2.V) != (qcsd.CodeLength(params.Code)+63)/64 {
+	if len(sk.SLSS.S) != params.SLSS.L*params.SLSS.N {
+		return false
+	}
+	if len(sk.Code.YPos) != params.Code.W && len(sk.Code.Y) != (params.Code.N+63)/64 {
 		return false
 	}
 	return true
@@ -310,6 +365,9 @@ func implicitReject(sk *kmosaic.MOSAICSecretKey, ctBytes []byte) []byte {
 
 // Encrypt encrypts a message (possibly empty) using the KEM and AES-256-GCM.
 func Encrypt(pk *kmosaic.MOSAICPublicKey, plaintext []byte) (*kmosaic.EncryptedMessage, error) {
+	if uint64(len(plaintext)) > MaxPlaintextSize {
+		return nil, kmosaic.ErrMessageTooLarge
+	}
 	result, err := Encapsulate(pk)
 	if err != nil {
 		return nil, err
@@ -370,13 +428,20 @@ func aeadFor(sharedSecret []byte) (cipher.AEAD, []byte, error) {
 // SerializePublicKey serializes a public key:
 // header || [slss_len:4][slss] || [code_len:4][code] || binding:32.
 func SerializePublicKey(pk *kmosaic.MOSAICPublicKey) []byte {
+	if pk == nil || checkKnownParams(pk.Params) != nil || len(pk.Binding) != 32 {
+		return nil
+	}
 	hdr, err := wire.Header(wire.TypeKEMPublicKey, pk.Params.Level)
 	if err != nil {
 		return nil
 	}
+	s, c := slss.SerializePublicKey(pk.SLSS), qcsd.SerializePublicKey(pk.Code, pk.Params.Code)
+	if s == nil || c == nil {
+		return nil
+	}
 	out := hdr
-	out = wire.AppendLV(out, slss.SerializePublicKey(pk.SLSS))
-	out = wire.AppendLV(out, qcsd.SerializePublicKey(pk.Code, pk.Params.Code))
+	out = wire.AppendLV(out, s)
+	out = wire.AppendLV(out, c)
 	return append(out, pk.Binding...)
 }
 
@@ -432,13 +497,20 @@ func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
 // SerializeSecretKey serializes a secret key:
 // header || [slss_len:4][slss] || [code_len:4][code] || seed:32 || pkhash:32.
 func SerializeSecretKey(sk *kmosaic.MOSAICSecretKey, params kmosaic.MOSAICParams) []byte {
+	if sk == nil || checkKnownParams(params) != nil || !secretKeyShapeValid(sk, params) {
+		return nil
+	}
 	hdr, err := wire.Header(wire.TypeKEMSecretKey, params.Level)
 	if err != nil {
 		return nil
 	}
+	s, c := slss.SerializeSecretKey(sk.SLSS, params.SLSS), qcsd.SerializeSecretKey(sk.Code, params.Code)
+	if s == nil || c == nil {
+		return nil
+	}
 	out := hdr
-	out = wire.AppendLV(out, slss.SerializeSecretKey(sk.SLSS, params.SLSS))
-	out = wire.AppendLV(out, qcsd.SerializeSecretKey(sk.Code, params.Code))
+	out = wire.AppendLV(out, s)
+	out = wire.AppendLV(out, c)
 	out = append(out, sk.Seed...)
 	return append(out, sk.PublicKeyHash...)
 }
@@ -473,6 +545,7 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 	}
 	codeSK, err := qcsd.DeserializeSecretKey(codeBytes, params.Code)
 	if err != nil {
+		utils.ZeroizeInt8(slssSK.S)
 		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
 	}
 	return &kmosaic.MOSAICSecretKey{
@@ -484,13 +557,23 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
 }
 
 // SerializeCiphertext serializes a ciphertext: header || [c1_len:4][c1] || [c2_len:4][c2].
+// It returns nil for a nil or mis-shaped ciphertext; a ciphertext with
+// out-of-range coefficients or padding bits serializes to its canonical
+// form (Decapsulate rejects such in-memory ciphertexts before use).
 func SerializeCiphertext(ct *kmosaic.MOSAICCiphertext, params kmosaic.MOSAICParams) []byte {
+	if ct == nil || checkKnownParams(params) != nil {
+		return nil
+	}
 	hdr, err := wire.Header(wire.TypeKEMCiphertext, params.Level)
 	if err != nil {
 		return nil
 	}
+	c1 := slss.SerializeCiphertext(&ct.C1, params.SLSS)
+	if c1 == nil || len(ct.C2.U) != (params.Code.N+63)/64 || len(ct.C2.V) != (qcsd.CodeLength(params.Code)+63)/64 {
+		return nil
+	}
 	out := hdr
-	out = wire.AppendLV(out, slss.SerializeCiphertext(&ct.C1, params.SLSS))
+	out = wire.AppendLV(out, c1)
 	return wire.AppendLV(out, qcsd.SerializeCiphertext(&ct.C2, params.Code))
 }
 
@@ -525,12 +608,19 @@ func DeserializeCiphertext(data []byte) (*kmosaic.MOSAICCiphertext, kmosaic.MOSA
 // SerializeEncryptedMessage serializes an encrypted message:
 // header || [ct_len:4][ciphertext] || payload.
 func SerializeEncryptedMessage(em *kmosaic.EncryptedMessage, params kmosaic.MOSAICParams) []byte {
+	if em == nil {
+		return nil
+	}
+	ct := SerializeCiphertext(&em.Ciphertext, params)
+	if ct == nil {
+		return nil
+	}
 	hdr, err := wire.Header(wire.TypeEncryptedMsg, params.Level)
 	if err != nil {
 		return nil
 	}
 	out := hdr
-	out = wire.AppendLV(out, SerializeCiphertext(&em.Ciphertext, params))
+	out = wire.AppendLV(out, ct)
 	return append(out, em.Encrypted...)
 }
 

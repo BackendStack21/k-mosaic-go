@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +27,7 @@ import (
 )
 
 const (
-	version = "4.0.0"
+	version = "4.1.0"
 	appName = "k-mosaic-cli"
 
 	exitOK      = 0
@@ -476,7 +478,7 @@ func signVerify(args []string) {
 	config := parseConfig(args)
 	pkFile := requireArg(args, "--public-key", "-pk")
 	sigFile := requireArg(args, "--signature", "-sig")
-	if getArg(args, "--message", "-m") == "" && getArg(args, "--input", "-i") == "" {
+	if !hasFlag(args, "--message", "-m") && !hasFlag(args, "--input", "-i") {
 		fail("--message or --input is required for verification")
 	}
 	msgBytes := readMessage(args)
@@ -516,9 +518,11 @@ func handleBenchmark(args []string) {
 	config := parseConfig(args)
 	iterations := 10
 	if s := getArg(args, "--iterations", "-n"); s != "" {
-		if _, err := fmt.Sscanf(s, "%d", &iterations); err != nil || iterations < 1 {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > 1000000 {
 			fail("invalid --iterations value %q", s)
 		}
+		iterations = n
 	}
 	avg := func(total time.Duration) time.Duration { return total / time.Duration(iterations) }
 
@@ -621,6 +625,7 @@ func handleBenchmark(args []string) {
 // ============================================================================
 
 func parseConfig(args []string) CLIConfig {
+	checkArgs(args)
 	config := CLIConfig{SecurityLevel: kmosaic.MOS_128, OutputFormat: FormatBase64}
 	switch level := getArg(args, "--level", "-l"); level {
 	case "128", "MOS-128", "MOS_128":
@@ -654,6 +659,35 @@ var valueFlags = map[string]bool{
 	"--iterations": true, "-n": true,
 }
 
+// boolFlags lists the options that take no value.
+var boolFlags = map[string]bool{
+	"--verbose": true, "-v": true, "--timing": true, "-t": true,
+}
+
+// checkArgs rejects unknown options, options without a value, and stray
+// positional arguments, so that a misspelled option (for example "--ouput")
+// is an error instead of being silently ignored.
+func checkArgs(args []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case valueFlags[a]:
+			if i+1 >= len(args) {
+				fail("option %s requires a value", a)
+			}
+			i++
+		case boolFlags[a]:
+		case strings.HasPrefix(a, "-"):
+			fail("unknown option %q", a)
+		default:
+			fail("unexpected argument %q", a)
+		}
+	}
+}
+
+// getArg returns the value of the first occurrence of an option, or "" if it
+// is absent. An option given with an empty value ("-m ”") also returns "";
+// use hasFlag to tell the two apart.
 func getArg(args []string, long, short string) string {
 	for i := 0; i < len(args); i++ {
 		if args[i] == long || args[i] == short {
@@ -691,21 +725,34 @@ func requireArg(args []string, long, short string) string {
 
 // readMessage returns the message from --message, --input or stdin.
 func readMessage(args []string) []byte {
-	if m := getArg(args, "--message", "-m"); m != "" {
-		return []byte(m)
+	if hasFlag(args, "--message", "-m") {
+		return []byte(getArg(args, "--message", "-m")) // possibly empty
 	}
-	if f := getArg(args, "--input", "-i"); f != "" {
-		data, err := readFileLimited(f)
+	if hasFlag(args, "--input", "-i") {
+		data, err := readFileLimited(getArg(args, "--input", "-i"))
 		if err != nil {
 			fail("reading input file: %v", err)
 		}
 		return data
 	}
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxInputFileSize))
+	data, err := readLimited(os.Stdin)
 	if err != nil {
 		fail("reading from stdin: %v", err)
 	}
 	return data
+}
+
+// readLimited reads at most maxInputFileSize bytes and fails if more are
+// available, so that no input is silently truncated.
+func readLimited(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxInputFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxInputFileSize {
+		return nil, fmt.Errorf("input too large: more than %d bytes", maxInputFileSize)
+	}
+	return data, nil
 }
 
 func encodeBytes(data []byte, format OutputFormat) string {
@@ -719,6 +766,11 @@ func encodeBytes(data []byte, format OutputFormat) string {
 // base64. Hex is tried first whenever the string looks like hex (even length,
 // only hex digits); every hex digit is a valid base64 character, so a hex
 // string of length divisible by four would otherwise decode as base64 garbage.
+// The converse ambiguity (a base64 string made only of hex digits, such as
+// "eDA3") cannot arise for values this tool writes: every serialized object
+// starts with the "kMOS" header, which is "a01PUw" in base64, and the
+// 32-byte shared secret is 44 base64 characters ending in "=", while hex
+// output is always even-length hex.
 func decodeString(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if looksLikeHex(s) {
@@ -749,15 +801,16 @@ func looksLikeHex(s string) bool {
 	return true
 }
 
+// readFileLimited reads a file through the same byte limit as stdin; the
+// limit applies to what is read, not to a size reported beforehand, so
+// growing files, FIFOs and device files cannot bypass it.
 func readFileLimited(filename string) ([]byte, error) {
-	info, err := os.Stat(filename)
+	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
-	if info.Size() > maxInputFileSize {
-		return nil, fmt.Errorf("input file too large: %d > %d bytes", info.Size(), maxInputFileSize)
-	}
-	return os.ReadFile(filename)
+	defer func() { _ = f.Close() }()
+	return readLimited(f)
 }
 
 // loadField loads a binary field from a JSON file (by field name, with a few
@@ -851,19 +904,39 @@ func writeJSON(config CLIConfig, v interface{}) {
 	}
 }
 
+// writeFile writes data to filename atomically: the content goes to a new
+// temporary file in the same directory, created exclusively with mode 0600,
+// and is renamed over the destination once written and synced. The data is
+// therefore never readable under a looser mode, a pre-existing symlink at
+// the destination is replaced rather than followed, and a failed write
+// leaves any previous file intact. The final mode is set on the open file
+// before the rename, so umask does not affect it.
 func writeFile(filename string, data []byte, mode os.FileMode) {
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	dir := filepath.Dir(filename)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(filename)+".tmp-*")
 	if err != nil {
 		fail("creating output file: %v", err)
 	}
+	tmp := f.Name()
+	cleanup := func() { _ = f.Close(); _ = os.Remove(tmp) }
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+		cleanup()
 		fail("writing output file: %v", err)
 	}
+	if err := f.Chmod(mode); err != nil {
+		cleanup()
+		fail("setting file permissions: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		fail("syncing output file: %v", err)
+	}
 	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		fail("closing output file: %v", err)
 	}
-	if err := os.Chmod(filename, mode); err != nil {
-		fail("setting file permissions: %v", err)
+	if err := os.Rename(tmp, filename); err != nil {
+		_ = os.Remove(tmp)
+		fail("writing output file: %v", err)
 	}
 }

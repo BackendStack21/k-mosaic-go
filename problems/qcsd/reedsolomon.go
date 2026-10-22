@@ -179,7 +179,11 @@ func convolveCoef(lambda, srev, scratch []uint64, n, t2 int) byte {
 }
 
 // ctMaskNonZero returns -1 if x != 0 and 0 otherwise.
-func ctMaskNonZero(x int) int { return (x | -x) >> 63 }
+func ctMaskNonZero(x int) int { return int((int64(x) | -int64(x)) >> 63) }
+
+// ctMaskNonZero64 returns all ones if x != 0 and 0 otherwise, for a 64-bit
+// operand (used on OR-folded syndrome words, which exceed 32 bits).
+func ctMaskNonZero64(x uint64) uint64 { return uint64(int64(x|-x) >> 63) }
 
 // rsWork holds the decoder's scratch vectors so that they live on the stack
 // and can be wiped with one clear.
@@ -221,7 +225,7 @@ func rsDecodeInto(msg, cw []byte, n1, delta int) int {
 		copy(tmp[:lw], lambda[:lw])
 		mulScalarAcc(lambda[:lw], prev[:lw], gfMul(d, gfInv(b)))
 		// cond = -1 iff d != 0 and 2L <= n.
-		cond := ctMaskNonZero(int(d)) & ((2*L - n - 1) >> 63)
+		cond := ctMaskNonZero(int(d)) & int(int64(2*L-n-1)>>63)
 		L ^= cond & ((n + 1 - L) ^ L)
 		um := uint64(int64(cond))
 		for w := 0; w < lw; w++ {
@@ -262,8 +266,8 @@ func rsDecodeInto(msg, cw []byte, n1, delta int) int {
 	for w := 0; w < t.sw; w++ {
 		nz |= synd2[w]
 	}
-	bad := ctMaskNonZero(int(nz)) | ((delta - L) >> 63) | ctMaskNonZero(roots^L)
-	okMask := ^uint64(int64(bad))
+	bad := ctMaskNonZero64(nz) | uint64(int64(delta-L)>>63) | uint64(int64(ctMaskNonZero(roots^L)))
+	okMask := ^bad
 	for w := 0; w < ew; w++ {
 		fixed[w] = word[w] ^ (corr[w] & okMask)
 	}

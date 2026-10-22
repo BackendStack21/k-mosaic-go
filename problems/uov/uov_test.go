@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -539,7 +540,7 @@ func TestParamsValidation(t *testing.T) {
 	sigBytes := SerializeSignature(sig)
 	bogus := []kmosaic.MQParams{
 		{N: 0, M: 0}, {N: -5, M: 2}, {N: 10, M: -1}, {N: 88, M: 44}, {N: 112, M: 0},
-		{N: 1 << 20, M: 44}, {N: 1 << 40, M: 1 << 38}, {N: MaxN + 1, M: 44},
+		{N: 1 << 20, M: 44}, {N: math.MaxInt / 2, M: math.MaxInt / 8}, {N: MaxN + 1, M: 44},
 	}
 	for _, p := range bogus {
 		if _, err := KeyGen(p, make([]byte, 32)); err == nil {

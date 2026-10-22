@@ -19,19 +19,30 @@ data.**
 
 Versions before 4.0.0 are broken. In 1.x the KEM shared secret could be
 recovered from the public key and ciphertext alone and signatures could be
-forged by anyone holding the public key; 3.0.0 reintroduced a ciphertext field
-that leaked the KEM shares. See [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md)
-for the reproduced attacks, a claim-by-claim review of the original design, the
-3.0 redesign and the 4.0 expert-panel review. Keys, ciphertexts and signatures
-from earlier versions must be discarded; 4.0.0 refuses to parse them.
+forged by anyone holding the public key; every version before 4.0.0 carried
+a share-leaking "proof" field in the KEM ciphertext. See
+[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the reproduced attacks,
+a claim-by-claim review of the original design, the 3.0 redesign, the 4.0
+review and the 4.1 validation pass (§6), which states what has and has not
+been verified. Keys, ciphertexts and signatures from earlier versions must be
+discarded; 4.x refuses to parse them. 4.1.0 changed the sparse-vector
+samplers to constant-time ones, so keys derived from a seed differ from
+4.0.0 (the wire format is unchanged).
 
 ## Overview
 
-kMOSAIC 3.x composes independent post-quantum hard problems so that breaking a
-primitive requires breaking **every** problem it is built from. The components
-are standard constructions, instantiated here without algebraic structure
-where the construction allows it, and combined so that the composite is at
-least as strong as its strongest component.
+kMOSAIC 4.x composes post-quantum hard problems so that a *mathematical*
+break of a primitive requires breaking **every** problem it is built from.
+The components are standard constructions, instantiated here without
+algebraic structure where the construction allows it. In the classical
+random-oracle model and under the standard combiner arguments, KEM
+confidentiality holds if either of its two problems is hard and signature
+unforgeability holds if any one of its three problems is hard. These are
+statements about the hard problems, not about this implementation: the
+combiner gives no protection against implementation or side-channel attacks,
+which can target each component separately, and the independence of the
+problems is a heuristic. The library is experimental and has not been
+reviewed outside this repository.
 
 | Primitive  | Component                                   | Hard problem                                   |
 | ---------- | ------------------------------------------- | ---------------------------------------------- |
@@ -42,17 +53,21 @@ least as strong as its strongest component.
 | Signatures | slhdsa: SLH-DSA / SPHINCS+ with SHAKE256    | Hash-function (second-)preimage resistance     |
 
 - **KEM**: a 32-byte ephemeral secret is split into two XOR shares, one
-  encrypted by each component. The ephemeral secret stays hidden as long as
-  *either* LWE or syndrome decoding is hard. A Fujisaki-Okamoto transform
-  (derandomization, re-encryption check, implicit rejection) gives IND-CCA
-  security in the random-oracle model. The hybrid `Encrypt`/`Decrypt` API
-  wraps the KEM with AES-256-GCM.
+  encrypted by each component. Against cryptanalysis, the ephemeral secret
+  stays hidden as long as *either* LWE or syndrome decoding is hard. A
+  Fujisaki-Okamoto transform (derandomization, re-encryption check, implicit
+  rejection) gives IND-CCA security in the classical random-oracle model;
+  security against quantum-accessible random oracles follows only from the
+  known non-tight FO results. The hybrid `Encrypt`/`Decrypt` API wraps the
+  KEM with AES-256-GCM.
 - **Signatures**: the message is hashed together with the composite public
-  key, and the digest is signed by all three components. A signature verifies
-  only if all three component signatures verify, so a forger must break
-  lattices, MQ **and** hash functions. Public keys carry a binding hash of
-  their components, and the digest includes the public-key hash, so
-  components cannot be mixed across key pairs.
+  key and a fresh nonce, and the 64-byte digest is signed by all three
+  components. A signature verifies only if all three component signatures
+  verify, so a forger must break lattices, MQ **and** hash functions (or find
+  a second preimage of the SHAKE256 digest). Public keys carry a binding hash
+  of their components, and the digest includes the public-key hash, so
+  components cannot be mixed across key pairs. Strong unforgeability needs
+  every component to be strongly unforgeable; this is assumed, not tested.
 
 There is no third practical post-quantum *encryption* family (isogenies are
 too slow and contested, multivariate encryption is broken), which is why the
@@ -109,8 +124,9 @@ Key topics in CLI.md:
 - File formats, exit codes and key management
 - Troubleshooting and FAQ
 
-Every command in CLI.md and every program in this README is executed by
-`go test ./test/ -run TestDocumentationSnippets` against the current tree.
+Every `go` and `bash` block in CLI.md and in this README is executed by
+`go test ./test/ -run TestDocumentationSnippets` against the current tree;
+`sh`, `json` and `text` blocks are illustrative and not checked.
 
 ## Quick Start
 
@@ -141,18 +157,23 @@ func main() {
 }
 ```
 
-## Performance and sizes (4.0.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
+## Performance and sizes (4.1.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
 
 | Operation            | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
-| KEM KeyGen           | 23 ms   | 43 ms   |
-| KEM Encapsulate      | 0.6 ms  | 1.0 ms  |
-| KEM Decapsulate      | 1.0 ms  | 1.7 ms  |
-| KEM DeserializePK    | 8 ms    | 13 ms   |
-| Sign KeyGen          | 133 ms  | 238 ms  |
-| Sign                 | 19 ms   | 53 ms   |
-| Verify               | 3.1 ms  | 4.8 ms  |
-| Sign DeserializePK   | 22 ms   | 42 ms   |
+| KEM KeyGen           | 51 ms   | 99 ms   |
+| KEM Encapsulate      | 1.5 ms  | 2.2 ms  |
+| KEM Decapsulate      | 2.3 ms  | 2.4 ms  |
+| KEM DeserializePK    | 9 ms    | 14 ms   |
+| Sign KeyGen          | 196 ms  | 365 ms  |
+| Sign                 | 22 ms   | 50 ms   |
+| Verify               | 3.7 ms  | 4.4 ms  |
+| Sign DeserializePK   | 22 ms   | 45 ms   |
+| Sign DeserializeSK   | 20 ms   | 58 ms   |
+
+KEM key generation and encapsulation are 2–3× slower than in 4.0.0 because
+the sparse-secret products are now dense and constant-time (see
+SECURITY_ASSESSMENT.md §6.2).
 
 | Object               | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
@@ -165,11 +186,10 @@ func main() {
 
 Keys are large because the lattice components are unstructured (no polynomial
 rings); the KEM ciphertext is dominated by the 14.4 KB HQC component and the
-signature by the SLH-DSA component (17 KB / 50 KB). The figures in
-[BenchmarkReport.md](BenchmarkReport.md) describe the broken 1.x design and
-are kept for the record only.
+signature by the SLH-DSA component (17 KB / 50 KB).
+[BenchmarkReport.md](BenchmarkReport.md) holds the full 4.1.0 measurements.
 
-## Formats and API (4.0.0)
+## Formats and API (4.x)
 
 Every serialized object starts with an 8-byte header (`"kMOS"`, format
 version 4, object type, parameter level), so `Deserialize*` functions take no
@@ -302,17 +322,38 @@ func main() {
 
 ## Security Levels
 
-The names are historical. Each composite is at least as strong as its
-strongest component, since every component must be broken.
+The names are historical. Against cryptanalysis each composite is as strong
+as its strongest component, because every component must be broken; it is
+*not* stronger than that component, and if the strongest component falls the
+composite drops to the next one (for the MOS_128 KEM, from HQC-256 to an
+LWE instance at NIST level 1).
 
 | Level   | SLSS (LWE)                 | QCSD (code)            | latsig            | uov               | slhdsa            |
 | ------- | -------------------------- | ---------------------- | ----------------- | ----------------- | ----------------- |
-| MOS_128 | n = m = 768, ≈2^146 quantum core-SVP | hqc-256 (NIST level 5) | ML-DSA-65 shape (level 3) | uov-Ip (level 1)  | SLH-DSA-128f (level 1) |
-| MOS_256 | n = m = 1152, ≈2^236 quantum core-SVP | hqc-256 (NIST level 5) | ML-DSA-87 shape (level 5) | uov-V (level 5)   | SLH-DSA-256f (level 5) |
+| MOS_128 | n = m = 768: ≈2^159 classical / 2^145 quantum core-SVP (level 1) | hqc-256 (NIST level 5) | ML-DSA-65 shape (level 3 by analogy) | uov-Ip (level 1)  | SLH-DSA-128f (level 1) |
+| MOS_256 | n = m = 1152: ≈2^251 classical / 2^234 quantum core-SVP (≈ level 5) | hqc-256 (NIST level 5) | ML-DSA-87 shape (level 5 by analogy) | uov-V (level 5)   | SLH-DSA-256f (level 5) |
 
-The SLSS estimates come from this repository's own core-SVP model and do not
-account for hybrid attacks on the sparse secret; the other figures are the
-published security levels of the parameter sets the components reuse.
+Provenance of the figures:
+
+- **SLSS**: this repository's own core-SVP model (`docs/estimator/`, primal,
+  dual, zero-guessing and an idealised sparse-secret hybrid; ±10 bits; not
+  the Lattice Estimator). The sparse secret costs under 2 bits at MOS_128
+  and up to 8 bits classically at MOS_256. The LWE decryption-failure bound
+  is below 2^-1000 per ciphertext; the composite rate is HQC's (< 2^-256).
+- **latsig**: the published ML-DSA levels are applied *by analogy* to a
+  transplant onto unstructured matrices that has no published analysis.
+- **QCSD, uov, slhdsa**: the published levels of the parameter sets they
+  reuse. The SLH-DSA component is checked bit-exactly against NIST ACVP
+  vectors in `problems/slhdsa/acvp_test.go`; the HQC component follows the
+  HQC construction and parameters but is not bit-compatible with the HQC
+  reference (own XOF domains, sampler and bit order).
+
+Side channels: the samplers, products, decoders and reductions on the KEM
+path and in the lattice signature are constant-time by construction (see
+§6 of the assessment for what was measured). The code component's sparse
+ring multiplication still reads a window at secret-dependent offsets, and
+UOV signing uses lookup tables and a branching pivot search. Go gives no
+constant-time guarantees.
 
 ## Requirements
 

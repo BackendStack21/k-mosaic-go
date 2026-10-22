@@ -113,17 +113,18 @@ func NewReader(data []byte) *Reader { return &Reader{data: data} }
 
 // LV reads one length-prefixed field. maxLen bounds the accepted length.
 func (r *Reader) LV(maxLen int) ([]byte, error) {
-	if r.off+4 > len(r.data) {
+	if maxLen < 0 || r.off > len(r.data)-4 {
 		return nil, ErrTooLong
 	}
 	n := uint64(binary.LittleEndian.Uint32(r.data[r.off:]))
-	r.off += 4
-	if n > uint64(maxLen) || n > uint64(len(r.data)-r.off) {
+	if n > uint64(maxLen) || n > uint64(len(r.data)-r.off-4) {
+		// The reader is left in place so that a failed read never looks
+		// like a consumed field.
 		return nil, ErrTooLong
 	}
-	v := r.data[r.off : r.off+int(n)]
-	r.off += int(n)
-	return v, nil
+	start := r.off + 4
+	r.off = start + int(n)
+	return r.data[start:r.off], nil
 }
 
 // Fixed reads exactly n bytes.
@@ -145,7 +146,7 @@ func (r *Reader) Rest() []byte {
 
 // Done returns an error unless every byte was consumed.
 func (r *Reader) Done() error {
-	if r.off != len(r.data) {
+	if r == nil || r.off != len(r.data) {
 		return ErrTrailer
 	}
 	return nil

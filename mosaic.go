@@ -9,7 +9,7 @@ package kmosaic
 // Users can also import specific sub-packages directly for more control.
 
 // Version of the kMOSAIC Go implementation.
-const Version = "4.0.0"
+const Version = "4.1.0"
 
 // API summary:
 //

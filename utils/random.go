@@ -66,6 +66,9 @@ func RandomInt(max int) (int, error) {
 // It uses the Box-Muller transform on uniform random bytes generated from a seed via SHAKE256.
 // The result is rounded to the nearest integer.
 func SampleGaussianVector(seed []byte, n int, sigma float64) []int32 {
+	if n < 0 || n > math.MaxInt32/8 {
+		return nil
+	}
 	bytes := Shake256(seed, n*8)
 	result := make([]int32, n)
 
@@ -132,6 +135,9 @@ func SampleCenteredBinomial(seed []byte, n, eta int) []int32 {
 // It uses rejection sampling on bytes generated from a seed via SHAKE256.
 // This ensures the distribution is uniform modulo q.
 func SampleVectorZq(seed []byte, n, q int) []int32 {
+	if n < 0 || q <= 0 || q > math.MaxInt32 {
+		return nil
+	}
 	result := make([]int32, n)
 
 	// Rejection threshold for unbiased sampling

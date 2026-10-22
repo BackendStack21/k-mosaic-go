@@ -17,4 +17,6 @@ var (
 	ErrAuthentication = errors.New("kmosaic: authentication failed")
 	// ErrInvalidParams is returned when a parameter set fails validation.
 	ErrInvalidParams = errors.New("kmosaic: invalid parameters")
+	// ErrMessageTooLarge is returned when a plaintext exceeds the AEAD limit.
+	ErrMessageTooLarge = errors.New("kmosaic: message too large")
 )

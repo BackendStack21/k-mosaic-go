@@ -113,10 +113,10 @@ func KeyGen(p kmosaic.CodeParams, seed []byte) (*kmosaic.CodeKeyPair, error) {
 	xSeed := utils.HashWithDomain(DomainX, seed)
 	ySeed := utils.HashWithDomain(DomainY, seed)
 	x := sampleFixedWeight(xSeed, p.N, p.W)
-	y := sampleFixedWeight(ySeed, p.N, p.W)
+	y, yPos := sampleFixedWeightPos(ySeed, p.N, p.W)
 	utils.Zeroize(xSeed)
 	utils.Zeroize(ySeed)
-	yPos := positions(y, p.N)
+	ctSortInts(yPos) // the serialized key lists positions in increasing order
 
 	s := mulSparse(h, yPos, p.N)
 	xorInto(s, x)
@@ -151,12 +151,12 @@ func Encrypt(pk kmosaic.CodePublicKey, message []byte, p kmosaic.CodeParams, ran
 	r2Seed := utils.HashWithDomain(DomainR2, randomness)
 	eSeed := utils.HashWithDomain(DomainE, randomness)
 	r1 := sampleFixedWeight(r1Seed, p.N, p.WR)
-	r2 := sampleFixedWeight(r2Seed, p.N, p.WR)
+	r2, r2Pos := sampleFixedWeightPos(r2Seed, p.N, p.WR)
 	e := sampleFixedWeight(eSeed, p.N, p.WE)
 	utils.Zeroize(r1Seed)
 	utils.Zeroize(r2Seed)
 	utils.Zeroize(eSeed)
-	r2Pos := positions(r2, p.N)
+	defer zeroInts(r2Pos)
 
 	u, sr2 := mulSparse2(pk.H, pk.S, r2Pos, p.N)
 	xorInto(u, r1)
@@ -300,6 +300,18 @@ func DeserializeSecretKey(data []byte, p kmosaic.CodeParams) (*kmosaic.CodeSecre
 		setBit(y, q)
 	}
 	return &kmosaic.CodeSecretKey{Y: y, YPos: pos}, nil
+}
+
+// CiphertextCanonical reports whether ct has the shape that Encrypt under p
+// produces and no padding bit set, i.e. whether it is the unique in-memory
+// form of its serialization. Shapes are public.
+func CiphertextCanonical(ct *kmosaic.CodeCiphertext, p kmosaic.CodeParams) bool {
+	if ct == nil || checkParams(p) != nil {
+		return false
+	}
+	cl := CodeLength(p)
+	return len(ct.U) == words(p.N) && len(ct.V) == words(cl) &&
+		isCanonical(ct.U, p.N) && isCanonical(ct.V, cl)
 }
 
 // SerializeCiphertext serializes a ciphertext as [u bits][v bits].

@@ -1,54 +1,61 @@
-# kMOSAIC Go Benchmark Report (4.0.0)
+# kMOSAIC Go Benchmark Report (4.1.0)
 
 **Date:** October 22, 2026
 **Platform:** Linux, 4 vCPU Intel Xeon @ 2.80 GHz (shared container; numbers vary by ±30% between runs)
 **Go:** 1.24
-**Command:** `go test ./kem/ ./sign/ ./problems/... -run '^$' -bench . -benchmem`
+**Command:** `go test ./kem/ ./sign/ ./problems/... -run '^$' -bench . -benchmem -benchtime=5x`
 
 Reports for versions before 4.0.0 were deleted: 1.x measured a signature that
 was a hash of the secret key, and 3.0 carried a ciphertext field that leaked
-the KEM shares. Neither described a working scheme.
+the KEM shares. Neither described a working scheme. The 4.1.0 numbers differ
+from 4.0.0 where the sparse-secret samplers and products were made
+constant-time (SECURITY_ASSESSMENT.md §6.2): KEM key generation 16.5 / 33.5
+→ 51 / 99 ms, encapsulation 0.8 / 0.8 → 1.5 / 2.2 ms, decapsulation
+2.2 / 1.4 → 2.3 / 2.4 ms. Signatures are unchanged within noise.
 
 ## Composite operations
 
 | Operation                   | MOS-128 | MOS-256 | Memory (128 / 256)  |
 | --------------------------- | ------- | ------- | ------------------- |
-| KEM KeyGen                  | 16.5 ms | 33.5 ms | 6.6 MB / 11.6 MB    |
-| KEM Encapsulate             | 0.81 ms | 0.80 ms | 152 KB / 159 KB     |
-| KEM Decapsulate             | 2.2 ms  | 1.4 ms  | 283 KB / 295 KB     |
-| KEM DeserializePublicKey    | 10.6 ms | 14.0 ms | 3.2 MB / 6.5 MB     |
-| Sign KeyGen                 | 164 ms  | 299 ms  | 17.6 MB / 38.4 MB   |
-| Sign                        | 17.9 ms | 47.2 ms | 328 KB / 815 KB     |
-| Verify                      | 3.3 ms  | 4.4 ms  | 28 KB / 49 KB       |
-| Sign DeserializePublicKey   | 16.8 ms | 33.8 ms | 10.0 MB / 22.5 MB   |
-| Sign DeserializeSecretKey   | 21.1 ms | 44.9 ms | 10.9 MB / 24.5 MB   |
+| KEM KeyGen                  | 51 ms   | 99 ms   | 8.8 MB / 15.0 MB    |
+| KEM Encapsulate             | 1.5 ms  | 2.2 ms  | 172 KB / 190 KB     |
+| KEM Decapsulate             | 2.3 ms  | 2.4 ms  | 304 KB / 326 KB     |
+| KEM DeserializePublicKey    | 9.4 ms  | 14.3 ms | 3.2 MB / 6.5 MB     |
+| Sign KeyGen                 | 196 ms  | 365 ms  | 17.6 MB / 38.4 MB   |
+| Sign                        | 21.7 ms | 50.4 ms | 328 KB / 820 KB     |
+| Verify                      | 3.7 ms  | 4.4 ms  | 27 KB / 44 KB       |
+| Sign DeserializePublicKey   | 21.7 ms | 45.1 ms | 10.0 MB / 22.5 MB   |
+| Sign DeserializeSecretKey   | 19.7 ms | 57.7 ms | 10.9 MB / 24.5 MB   |
 
 Memory is bytes allocated per operation; deserialization expands the public
 matrices, which dominate the in-memory size of the keys.
 
 ## Component operations
 
-| Component / operation            | MOS-128 (level-1/3 set) | MOS-256 (level-5 set) |
+| Component / operation            | MOS-128 (level-1 set)   | MOS-256 (level-5 set) |
 | -------------------------------- | ----------------------- | --------------------- |
-| SLSS (LWE) KeyGen                | 13.7 ms                 | 33.4 ms               |
-| SLSS Encrypt / Decrypt           | 0.15 / 0.18 ms          | 0.38 / 0.24 ms        |
-| SLSS ExpandMatrix                | 3.4 ms                  | 6.9 ms                |
-| QCSD (HQC-256) KeyGen            | 0.20 ms                 | same set              |
-| QCSD Encrypt / Decrypt           | 0.37 / 0.28 ms          | same set              |
-| QCSD ring multiply (fused / old) | 0.15 / 1.26 ms          | same set              |
-| QCSD RS decode (0 / 29 errors)   | 88 / 45 µs (noise)      | same set              |
-| Lattice signature KeyGen         | 120 ms                  | 214 ms                |
-| Lattice Sign / Verify            | 5.3 / 2.3 ms            | 7.5 / 4.0 ms          |
-| UOV KeyGen                       | 6.7 ms (uov-Ip)         | 71 ms (uov-V)         |
-| UOV Sign / Verify                | 0.52 / 0.19 ms          | 2.0 / 0.84 ms         |
-| UOV DeserializeSecretKey         | 3.0 ms                  | 51 ms                 |
-| SLH-DSA KeyGen                   | 0.87 ms (128f)          | 2.4 ms (256f)         |
-| SLH-DSA Sign (parallel / 1 core) | 14.5 / 53.6 ms          | 42.9 / 170 ms         |
-| SLH-DSA Verify                   | 3.0 ms                  | 4.5 ms                |
+| SLSS (LWE) KeyGen                | 48 ms                   | 75 ms                 |
+| SLSS Encrypt / Decrypt           | 0.69 / 0.09 ms          | 1.50 / 0.13 ms        |
+| SLSS ExpandMatrix                | 3.7 ms                  | 6.1 ms                |
+| QCSD (HQC-256) KeyGen            | 0.47 ms                 | same set              |
+| QCSD Encrypt / Decrypt           | 0.86 / 0.30 ms          | same set              |
+| QCSD ring multiply (fused / old) | 0.14 / 1.27 ms          | same set              |
+| QCSD RS decode (0 … 90 errors)   | 44.0–45.0 µs (flat)     | same set              |
+| Lattice signature KeyGen         | 155 ms                  | 280 ms                |
+| Lattice Sign / Verify            | 5.5 / 1.6 ms            | 8.7 / 3.4 ms          |
+| UOV KeyGen                       | 4.5 ms (uov-Ip)         | 68 ms (uov-V)         |
+| UOV Sign / Verify                | 0.64 / 0.10 ms          | 2.0 / 0.95 ms         |
+| UOV DeserializeSecretKey         | 3.4 ms                  | 50 ms                 |
+| SLH-DSA KeyGen                   | 0.90 ms (128f)          | 2.5 ms (256f)         |
+| SLH-DSA Sign (parallel / 1 core) | 16.9 / 49.7 ms          | 43.2 / 172 ms         |
+| SLH-DSA Verify                   | 3.0 ms                  | 6.4 ms                |
 
-The Reed-Solomon decoder is constant-time by construction; the 0-error and
-29-error figures differ only by benchmark noise on this shared machine (a
-dedicated measurement shows 42.0–42.4 µs for 0 to 90 errors).
+The Reed-Solomon figure comes from `TestReedSolomonTimingFlat`, which
+measures the eleven error counts 0…90 interleaved (max/min ratio 1.021 on
+this run). The sequential `BenchmarkRSDecode` sub-benchmarks drift with the
+background load of the shared machine and should not be read as a timing
+difference: the decoder has a fixed number of iterations and no
+data-dependent branch.
 
 ## Serialized sizes
 
@@ -63,37 +70,42 @@ dedicated measurement shows 42.0–42.4 µs for 0 to 90 errors).
 
 ## Where the time goes
 
-- **Composite Sign** is bounded by SLH-DSA (about 128k / 420k SHAKE256 calls),
-  which runs its hypertree layers and FORS trees in parallel; on one core it
-  takes 54 / 170 ms.
+- **KEM KeyGen** is now the dense product `T = A·S` over every coefficient
+  (151M / 340M multiply-adds, register-blocked, split across cores) plus the
+  sort-based constant-time sampling of 256 secret columns. The 4.0 version
+  gathered only the 192 / 288 non-zero rows per column and leaked their
+  positions through the cache.
+- **KEM Encapsulate / Decapsulate** are dominated by the dense `Aᵀ·r`
+  product (0.69 / 1.5 ms) and the code component's sparse ring
+  multiplications (fused window multiply, 149 positions over 57,637 bits).
+  Decapsulation runs both decryptions and a full re-encryption.
+- **Composite Sign** is bounded by SLH-DSA (about 128k / 420k SHAKE256
+  calls), which runs its hypertree layers and FORS trees in parallel; on one
+  core it takes 50 / 172 ms.
 - **Composite Verify** is the sum of the three verifications plus one 64-byte
   SHAKE over the message; public-key hashes are cached in the key structs.
-- **KEM Encapsulate / Decapsulate** are dominated by the code component's
-  sparse ring multiplications (fused window multiply, 149 positions over
-  57,637 bits).
-- **Key generation** is dominated by the lattice signature's dense product
-  `A·S1` (500M–940M multiply-adds in pure Go, no SIMD) and, for the KEM, by
-  expanding the LWE matrix.
+- **Signature key generation** is dominated by the lattice signature's dense
+  product `A·S1` (500M–940M multiply-adds in pure Go, no SIMD).
 
 ## Raw data
 
 ```text
-BenchmarkMOS128/KeyGen-4                   5    16522790 ns/op   6584449 B/op   1111 allocs/op   (kem)
-BenchmarkMOS128/Encapsulate-4              5      813226 ns/op    151756 B/op     55 allocs/op
-BenchmarkMOS128/Decapsulate-4              5     2202555 ns/op    283401 B/op     88 allocs/op
-BenchmarkMOS128/DeserializePublicKey-4     5    10589512 ns/op   3187395 B/op     41 allocs/op
-BenchmarkMOS256/KeyGen-4                   5    33476493 ns/op  11625228 B/op   1109 allocs/op
-BenchmarkMOS256/Encapsulate-4              5      797788 ns/op    159262 B/op     56 allocs/op
-BenchmarkMOS256/Decapsulate-4              5     1388781 ns/op    294657 B/op     88 allocs/op
-BenchmarkMOS256/DeserializePublicKey-4     5    13958448 ns/op   6531862 B/op     40 allocs/op
-BenchmarkMOS128/KeyGen-4                   5   164059075 ns/op  17599328 B/op    131 allocs/op   (sign)
-BenchmarkMOS128/Sign-4                     5    17859818 ns/op    328305 B/op    100 allocs/op
-BenchmarkMOS128/Verify-4                   5     3335856 ns/op     27502 B/op     31 allocs/op
-BenchmarkMOS128/DeserializePublicKey-4     5    16845405 ns/op  10038387 B/op     47 allocs/op
-BenchmarkMOS128/DeserializeSecretKey-4     5    21094781 ns/op  10917435 B/op     54 allocs/op
-BenchmarkMOS256/KeyGen-4                   5   299385766 ns/op  38437961 B/op    127 allocs/op
-BenchmarkMOS256/Sign-4                     5    47187474 ns/op    815323 B/op     84 allocs/op
-BenchmarkMOS256/Verify-4                   5     4429632 ns/op     48580 B/op     33 allocs/op
-BenchmarkMOS256/DeserializePublicKey-4     5    33760795 ns/op  22531817 B/op     49 allocs/op
-BenchmarkMOS256/DeserializeSecretKey-4     5    44889826 ns/op  24483464 B/op     53 allocs/op
+BenchmarkMOS128/KeyGen-4                   5    51446816 ns/op   8849024 B/op   1369 allocs/op   (kem)
+BenchmarkMOS128/Encapsulate-4              5     1478666 ns/op    172289 B/op     61 allocs/op
+BenchmarkMOS128/Decapsulate-4              5     2322330 ns/op    304344 B/op     95 allocs/op
+BenchmarkMOS128/DeserializePublicKey-4     5     9398701 ns/op   3186384 B/op     40 allocs/op
+BenchmarkMOS256/KeyGen-4                   5    99251440 ns/op  14970116 B/op   1363 allocs/op
+BenchmarkMOS256/Encapsulate-4              5     2183883 ns/op    190132 B/op     60 allocs/op
+BenchmarkMOS256/Decapsulate-4              5     2388831 ns/op    325700 B/op     94 allocs/op
+BenchmarkMOS256/DeserializePublicKey-4     5    14297123 ns/op   6532713 B/op     41 allocs/op
+BenchmarkMOS128/KeyGen-4                   5   196275103 ns/op  17599020 B/op    130 allocs/op   (sign)
+BenchmarkMOS128/Sign-4                     5    21661288 ns/op    328241 B/op    100 allocs/op
+BenchmarkMOS128/Verify-4                   5     3650087 ns/op     26916 B/op     30 allocs/op
+BenchmarkMOS128/DeserializePublicKey-4     5    21720505 ns/op  10039436 B/op     48 allocs/op
+BenchmarkMOS128/DeserializeSecretKey-4     5    19686128 ns/op  10917041 B/op     54 allocs/op
+BenchmarkMOS256/KeyGen-4                   5   364983465 ns/op  38433577 B/op    125 allocs/op
+BenchmarkMOS256/Sign-4                     5    50355249 ns/op    819963 B/op     86 allocs/op
+BenchmarkMOS256/Verify-4                   5     4409263 ns/op     43992 B/op     30 allocs/op
+BenchmarkMOS256/DeserializePublicKey-4     5    45121230 ns/op  22531478 B/op     48 allocs/op
+BenchmarkMOS256/DeserializeSecretKey-4     5    57721928 ns/op  24483982 B/op     54 allocs/op
 ```
