@@ -414,19 +414,30 @@ func TestSerializeSecretKey(t *testing.T) {
 			}
 		})
 	}
-	// Exhaustive 4-entry codes.
+	// Exhaustive 4-entry codes: the column holding the byte must decode
+	// (no "11" code) and have weight exactly W = 1; the other columns are
+	// filled with one +1 entry so that they have weight W too.
 	p := core.MOS128Params.SLSS
 	p.N, p.L, p.W = 4, 8, 1
 	for x := 0; x < 256; x++ {
 		data := make([]byte, SecretKeySize(p))
+		for j := 0; j < p.L; j++ {
+			data[j] = 0b01 // entry 0 of column j is +1
+		}
 		data[3] = byte(x)
 		sk, err := DeserializeSecretKey(data, p)
 		valid := true
+		weight := 0
 		for k := 0; k < 4; k++ {
-			if (x>>(2*k))&3 == 3 {
+			c := (x >> (2 * k)) & 3
+			if c == 3 {
 				valid = false
 			}
+			if c != 0 {
+				weight++
+			}
 		}
+		valid = valid && weight == p.W
 		if valid != (err == nil) {
 			t.Fatalf("byte %08b: valid=%v err=%v", x, valid, err)
 		}

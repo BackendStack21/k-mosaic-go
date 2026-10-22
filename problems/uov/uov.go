@@ -25,28 +25,47 @@
 //
 // # Side channels
 //
-// Signing is NOT constant-time. It performs memory accesses whose addresses
-// depend on secret values: GF(256) multiplications through a 64 KB table,
-// the inverse of each pivot through log/exp tables, bucket accumulation
-// indexed by the secret products v_r·v_c when evaluating vᵀ P1_i v, and
-// nibble-table lookups indexed by secret factors during Gaussian elimination
-// (whose pivot search also branches on secret data). The vᵀ S_i products are
-// computed with masked bit-plane arithmetic, without secret-dependent
-// addresses. In key generation the P1_i·O products use nibble tables of the
-// secret oil rows indexed only by the public P1 coefficients; the Oᵀ(P1_i·O +
-// P2_i) step needed for P3 indexes those tables by secret values (it runs in
-// KeyGen only; DeserializeSecretKey skips it). Verification touches public
-// data only.
+// Signing and key generation are constant-time with respect to secret data:
+// no branch, loop bound, memory address or shift amount depends on the seed,
+// the oil matrix O, the S_i matrices, the vinegar values, the linear system
+// or its solution. Specifically:
+//
+//   - vᵀ S_i and vᵀ P1 v are accumulated in bit planes masked by the bits of
+//     each vinegar value (accumPlanes, hornerPlanes) and combined with the
+//     packed scalar product mulAddVec64 (evalP1CT); no table or bucket is
+//     indexed by secret data;
+//   - the M×M system is solved by masked Gauss-Jordan elimination (solve):
+//     every lower row is conditionally added to the pivot row, the pivot is
+//     inverted with the addition chain gfInvCT, and every row is reduced with
+//     masked doubling-table products. Singularity is returned as a flag; the
+//     caller retries with fresh vinegar only after the elimination finished,
+//     which reveals only that a discarded vinegar was unlucky;
+//   - s = (v + O·x, x) is computed with mulAddVec;
+//   - in key generation, P1_i·O uses nibble tables of the secret oil rows
+//     indexed only by the public P1 coefficients (the branch skipping zero
+//     coefficients is on public data too), and Oᵀ(P1_i·O + P2_i) for P3 uses
+//     masked doubling-table products (mulAddPow) with the secret scalars.
+//
+// Not covered: Verify, Evaluate and public-key expansion operate on public
+// data and keep the faster table and bucket code (gfMul, gfInv, evalBuckets).
+// The SHAKE computations rely on crypto/sha3. The argument is about the Go
+// source: the compiler is not known to turn the masking idioms used here into
+// branches, but this is not guaranteed by the language, and the Go runtime
+// (garbage collector, scheduler) adds its own, data-independent noise.
+// Integer multiplication is not applied to secret data (the xtime reduction
+// uses shifts), so CPUs with operand-dependent multiply latency are not a
+// concern; the copies of secret material in Go-managed memory may outlive the
+// zeroization performed here.
 package uov
 
 import (
-	"crypto/rand"
 	"crypto/sha3"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/utils"
 )
 
 const (
@@ -230,13 +249,22 @@ func deriveKey(d dims, seed []byte, wantP3 bool) *derived {
 	h.Reset()
 	P1, P2 := expandPublic(pkSeed, d)
 
-	// Nibble tables of the packed oil rows, shared by all forms.
+	// Nibble tables of the packed oil rows, shared by all forms. They are
+	// indexed only by public P1 coefficients. For P3, whose scalars are
+	// secret, the doubling tables opow are used instead (masked selection).
 	tw := 32 * w
 	tabs := make([]uint64, v*tw)
 	row := make([]uint64, w)
+	var opow []uint64
+	if wantP3 {
+		opow = make([]uint64, v*8*w)
+	}
 	for r := 0; r < v; r++ {
 		packBytes(row, O[r*m:(r+1)*m])
 		buildNibbleTable(tabs[r*tw:(r+1)*tw], row)
+		if wantP3 {
+			buildPowTable(opow[r*8*w:(r+1)*8*w], row)
+		}
 	}
 
 	prep := make([]byte, d.skPreparedLen())
@@ -292,11 +320,9 @@ func deriveKey(d dims, seed []byte, wantP3 bool) *derived {
 			}
 			copy(si[r*m:(r+1)*m], dst)
 			if wantP3 {
-				// Row b of M_iᵀ = Σ_r Q[r][b]·O[r], with M_i = Oᵀ·Q.
-				tr := tabs[r*tw : (r+1)*tw]
-				for b := 0; b < m; b++ {
-					mulRowInto(nt[b*w:(b+1)*w], tr, byte(q[b>>3]>>(8*(b&7))))
-				}
+				// Row b of M_iᵀ = Σ_r Q[r][b]·O[r], with M_i = Oᵀ·Q. The
+				// scalars Q[r][b] are secret: masked doubling-table products.
+				outerAddPow(nt, opow[r*8*w:(r+1)*8*w], q)
 			}
 		}
 		if wantP3 {
@@ -318,6 +344,7 @@ func deriveKey(d dims, seed []byte, wantP3 bool) *derived {
 	}
 
 	clear(tabs)
+	clear(opow)
 	clear(row)
 	clear(u)
 	clear(ut)
@@ -401,7 +428,8 @@ func target(message, salt []byte, m int) []byte {
 // layout prep (one packed vector of len(out) words per monomial) into out.
 // Products are accumulated in 256 buckets acc (256*len(out) words) and
 // combined once at the end. The bucket index is the product s_r·s_c, so the
-// access pattern depends on s (public in verification, secret in signing).
+// access pattern depends on s: it is used for verification (public s) only.
+// Signing uses evalP1CT.
 func evalBuckets(out, acc []uint64, prep, s []byte) {
 	w := len(out)
 	st := 8 * w
@@ -424,56 +452,180 @@ func evalBuckets(out, acc []uint64, prep, s []byte) {
 	combineBuckets(out, acc)
 }
 
-// solve solves the M×M system packed in A by Gauss-Jordan elimination. Each
-// of the m rows has wa words: the M coefficients followed by the right-hand
-// side at element m. On success element m of row j holds x_j. tab is scratch
-// space of 32*wa words. It returns false if the system is singular.
-func solve(A []uint64, m, wa int, tab []uint64) bool {
+// evalP1CT computes Σ_{r<=c} v_r v_c · vec(r,c) over the interleaved layout
+// prep (one packed vector of len(out) words per monomial) into out, as
+// Σ_r v_r·(Σ_{c>=r} v_c·vec(r,c)). The inner sum is accumulated lazily in 8
+// bit planes (accumPlanes) and folded with hornerPlanes, the outer product
+// uses mulAddVec64: the vinegar values only ever act as scalars through
+// masks, so control flow and addresses depend on len(v) and len(out) only.
+// planes holds 8*len(out) words and u len(out) words of scratch.
+func evalP1CT(out, planes, u []uint64, prep, v []byte) {
+	w := len(out)
+	st := 8 * w
+	clear(out)
+	off := 0
+	for r := range v {
+		clear(planes)
+		for c := r; c < len(v); c++ {
+			accumPlanes(planes, prep[off:off+st], v[c])
+			off += st
+		}
+		hornerPlanes(u, planes)
+		mulAddVec64(out, u, v[r])
+	}
+}
+
+// solve solves the M×M system packed in A by constant-time Gauss-Jordan
+// elimination (gf256mat_gauss_elim of the UOV reference implementation).
+// Each of the m rows has wa words: the M coefficients followed by the
+// right-hand side at element m. pow is scratch space of 8*wa words. It
+// returns 1 if the system is singular and 0 otherwise; on 0, element m of
+// row j holds x_j (on 1, A holds garbage).
+//
+// For column col, every row j > col is added to the pivot row under the mask
+// "pivot is zero", so that the pivot becomes non-zero whenever some candidate
+// is; the pivot is inverted with gfInvCT, every other row is reduced by the
+// masked doubling-table product f·inv·pivotrow, and the pivot row is
+// normalized. Loop bounds, row/word indices and shift amounts depend only on
+// m and col; no branch or address depends on the matrix entries. The
+// singular flag is the OR of "pivot is zero" over all columns: at the first
+// column where the masked additions leave a zero pivot, all candidate rows
+// have a zero there while the previous columns are reduced, so the matrix is
+// singular; conversely a singular matrix must hit such a column.
+func solve(A []uint64, m, wa int, pow []uint64) uint {
+	var singular uint64
 	for col := 0; col < m; col++ {
 		ci, sh := col>>3, uint(8*(col&7))
-		pivot := -1
-		for r := col; r < m; r++ {
-			if byte(A[r*wa+ci]>>sh) != 0 {
-				pivot = r
-				break
-			}
-		}
-		if pivot < 0 {
-			return false
-		}
-		prow := A[col*wa : (col+1)*wa]
-		if pivot != col {
-			other := A[pivot*wa : (pivot+1)*wa]
+		ww := wa - ci // words from the one holding column col
+		prow := A[col*wa+ci : (col+1)*wa]
+		for j := col + 1; j < m; j++ {
+			mask := isZeroMask(byte(prow[0] >> sh))
+			other := A[j*wa+ci : (j+1)*wa]
 			for k := range prow {
-				prow[k], other[k] = other[k], prow[k]
+				prow[k] ^= other[k] & mask
 			}
 		}
-		inv := gfInv(byte(prow[ci] >> sh))
-		// Columns before col are already zero in the pivot row.
-		buildNibbleTable(tab[:32*(wa-ci)], prow[ci:])
+		piv := byte(prow[0] >> sh)
+		singular |= isZeroMask(piv)
+		inv := gfInvCT(piv) // 0 if piv == 0
+		// Columns before col are already zero in the pivot row (in the
+		// non-singular case, which is the only one whose result is used).
+		t := pow[:8*ww]
+		buildPowTable(t, prow)
 		for r := 0; r < m; r++ {
-			if r == col {
+			if r == col { // public index
 				continue
 			}
-			f := byte(A[r*wa+ci] >> sh)
-			mulRowInto(A[r*wa+ci:(r+1)*wa], tab, gfMul(f, inv))
+			row := A[r*wa+ci : (r+1)*wa]
+			f := byte(row[0] >> sh)
+			mulAddPow(row, t, gfMulCT(f, inv))
 		}
-		// Normalize the pivot row: prow = inv·prow = prow ^ (inv^1)·prow.
-		mulRowInto(prow[ci:], tab, inv^1)
+		// Normalize: prow = inv·prow = prow ^ (inv^1)·prow (t is of the old prow).
+		mulAddPow(prow, t, inv^1)
 	}
-	return true
+	return uint(singular & 1)
+}
+
+// signer holds the secret-key material and scratch space of one signing
+// operation. All buffers are sized from the parameters only.
+type signer struct {
+	d          dims
+	wa         int    // words per augmented row of the linear system
+	p1Prep     []byte // interleaved P1 (signing layout)
+	sPacked    []byte // S_i matrices as packed rows (signing layout)
+	ot         []byte // Oᵀ: M rows of V bytes
+	planes     []uint64
+	u, y       []uint64
+	A, pow     []uint64
+	x          []byte
+	tmpPrepped []byte // signing layout built for this operation, if any
+}
+
+func newSigner(d dims, prep, O []byte) *signer {
+	v, m, w := d.v, d.m, d.w
+	wa := words(m + 1)
+	sg := &signer{
+		d: d, wa: wa,
+		p1Prep:  prep[:d.t1*d.stride],
+		sPacked: prep[d.t1*d.stride:],
+		ot:      make([]byte, m*v),
+		planes:  make([]uint64, 8*w),
+		u:       make([]uint64, w),
+		y:       make([]uint64, w),
+		A:       make([]uint64, m*wa),
+		pow:     make([]uint64, 8*wa),
+		x:       make([]byte, m),
+	}
+	// Transposition: addresses depend on the indices only.
+	for r := 0; r < v; r++ {
+		for j := 0; j < m; j++ {
+			sg.ot[j*v+r] = O[r*m+j]
+		}
+	}
+	return sg
+}
+
+func (sg *signer) wipe() {
+	clear(sg.ot)
+	clear(sg.planes)
+	clear(sg.u)
+	clear(sg.y)
+	clear(sg.A)
+	clear(sg.pow)
+	clear(sg.x)
+	clear(sg.tmpPrepped)
+}
+
+// attempt computes the candidate signature s (N bytes) for the vinegar vin
+// (V bytes) and target t (M bytes) and returns 1 if the linear system was
+// singular (s is then meaningless) and 0 otherwise. Its control flow and
+// memory addresses depend only on the parameters, never on vin, t or the key.
+func (sg *signer) attempt(s, vin, t []byte) uint {
+	d := sg.d
+	v, m, w, wa, st := d.v, d.m, d.w, sg.wa, d.stride
+	A := sg.A
+	clear(A)
+	// Row i of L is vᵀ S_i, accumulated per bit plane of v with masks.
+	for i := 0; i < m; i++ {
+		clear(sg.planes)
+		blk := sg.sPacked[i*v*st : (i+1)*v*st]
+		for r := 0; r < v; r++ {
+			accumPlanes(sg.planes, blk[r*st:(r+1)*st], vin[r])
+		}
+		hornerPlanes(A[i*wa:i*wa+w], sg.planes)
+	}
+	// y = t - vᵀ P1 v goes into the augmented column.
+	evalP1CT(sg.y, sg.planes, sg.u, sg.p1Prep, vin)
+	ci, sh := m>>3, uint(8*(m&7))
+	for i := 0; i < m; i++ {
+		yi := byte(sg.y[i>>3]>>(8*(i&7))) ^ t[i]
+		A[i*wa+ci] |= uint64(yi) << sh
+	}
+	singular := solve(A, m, wa, sg.pow)
+	x := sg.x
+	for j := 0; j < m; j++ {
+		x[j] = byte(A[j*wa+ci] >> sh)
+	}
+	// s = (v + O·x, x), with O·x = Σ_j x_j·(column j of O).
+	copy(s[:v], vin)
+	for j := 0; j < m; j++ {
+		mulAddVec(s[:v], sg.ot[j*v:(j+1)*v], x[j])
+	}
+	copy(s[v:], x)
+	return singular
 }
 
 // Sign produces a UOV signature on message. The salt is
-// H(seed || message || 16 fresh random bytes), so a failing random source
-// degrades to deterministic salts rather than repeated ones; the vinegar
-// values are H(seed || salt || t || ctr).
+// H(seed || message || 16 fresh random bytes from utils.SecureRandomBytes),
+// so a failing random source degrades to deterministic salts rather than
+// repeated ones; the vinegar values are H(seed || salt || t || ctr).
 func Sign(sk *kmosaic.MQSecretKey, p kmosaic.MQParams, message []byte) (*kmosaic.MQSignature, error) {
-	var rnd [RandSize]byte
-	if _, err := rand.Read(rnd[:]); err != nil {
+	rnd, err := utils.SecureRandomBytes(RandSize)
+	if err != nil {
 		return nil, err
 	}
-	return signWithRand(sk, p, message, rnd[:])
+	defer clear(rnd)
+	return signWithRand(sk, p, message, rnd)
 }
 
 func signWithRand(sk *kmosaic.MQSecretKey, p kmosaic.MQParams, message, rnd []byte) (*kmosaic.MQSignature, error) {
@@ -484,17 +636,18 @@ func signWithRand(sk *kmosaic.MQSecretKey, p kmosaic.MQParams, message, rnd []by
 	if sk == nil {
 		return nil, errors.New("uov: nil secret key")
 	}
-	v, m, w := d.v, d.m, d.w
+	v, m := d.v, d.m
 	if len(sk.Seed) != SeedSize || len(sk.O) != v*m || len(sk.P1) != d.p1Len() || len(sk.S) != d.p2Len() {
 		return nil, errors.New("uov: malformed secret key")
 	}
 	prep := sk.Prepared
+	var tmp []byte
 	if len(prep) != d.skPreparedLen() {
-		prep = buildSKPrepared(d, sk.P1, sk.S)
-		defer clear(prep)
+		tmp = buildSKPrepared(d, sk.P1, sk.S)
+		prep = tmp
 	}
-	p1Prep := prep[:d.t1*d.stride]
-	sPacked := prep[d.t1*d.stride:]
+	sg := newSigner(d, prep, sk.O)
+	sg.tmpPrepped = tmp
 
 	h := newXOF(DomainSalt)
 	_, _ = h.Write(sk.Seed)
@@ -504,23 +657,11 @@ func signWithRand(sk *kmosaic.MQSecretKey, p kmosaic.MQParams, message, rnd []by
 	_, _ = h.Read(salt)
 	t := target(message, salt, m)
 
-	// Scratch buffers, allocated once and zeroized on every exit path.
-	wa := words(m + 1) // augmented rows: M coefficients and the right-hand side
 	vin := make([]byte, v)
-	acc := make([]uint64, 256*w)
-	yw := make([]uint64, w)
-	planes := make([]uint64, 8*w)
-	A := make([]uint64, m*wa)
-	tab := make([]uint64, 32*wa)
-	x := make([]byte, m)
+	s := make([]byte, d.n)
 	defer func() {
+		sg.wipe()
 		clear(vin)
-		clear(acc)
-		clear(yw)
-		clear(planes)
-		clear(A)
-		clear(tab)
-		clear(x)
 		h.Reset()
 	}()
 
@@ -535,60 +676,15 @@ func signWithRand(sk *kmosaic.MQSecretKey, p kmosaic.MQParams, message, rnd []by
 		_, _ = h.Write(t)
 		_, _ = h.Write(ctr[:])
 		_, _ = h.Read(vin)
-
-		// Row i of L is vᵀ S_i, computed per bit plane of v with masks.
-		clear(A)
-		p0, p1, p2, p3 := planes[0:w], planes[w:2*w], planes[2*w:3*w], planes[3*w:4*w]
-		p4, p5, p6, p7 := planes[4*w:5*w], planes[5*w:6*w], planes[6*w:7*w], planes[7*w:8*w]
-		for i := 0; i < m; i++ {
-			clear(planes)
-			blk := sPacked[i*v*d.stride : (i+1)*v*d.stride]
-			for r := 0; r < v; r++ {
-				vr := uint64(vin[r])
-				m0, m1, m2, m3 := -(vr & 1), -(vr >> 1 & 1), -(vr >> 2 & 1), -(vr >> 3 & 1)
-				m4, m5, m6, m7 := -(vr >> 4 & 1), -(vr >> 5 & 1), -(vr >> 6 & 1), -(vr >> 7 & 1)
-				srow := blk[r*d.stride : (r+1)*d.stride]
-				for k := range p0 {
-					s := binary.LittleEndian.Uint64(srow[8*k:])
-					p0[k] ^= s & m0
-					p1[k] ^= s & m1
-					p2[k] ^= s & m2
-					p3[k] ^= s & m3
-					p4[k] ^= s & m4
-					p5[k] ^= s & m5
-					p6[k] ^= s & m6
-					p7[k] ^= s & m7
-				}
-			}
-			hornerPlanes(A[i*wa:i*wa+w], planes)
-		}
-
-		// y = t - vᵀ P1 v goes into the augmented column.
-		evalBuckets(yw, acc, p1Prep, vin)
-		ci, sh := m>>3, uint(8*(m&7))
-		for i := 0; i < m; i++ {
-			yi := byte(yw[i>>3]>>(8*(i&7))) ^ t[i]
-			A[i*wa+ci] |= uint64(yi) << sh
-		}
-
-		if !solve(A, m, wa, tab) {
+		// Retrying on the flag, after the whole attempt ran, reveals only
+		// that a discarded vinegar gave a singular system (as in the
+		// reference implementation).
+		if sg.attempt(s, vin, t) != 0 {
 			continue
 		}
-		for j := 0; j < m; j++ {
-			x[j] = byte(A[j*wa+ci] >> sh)
-		}
-		s := make([]byte, d.n)
-		for r := 0; r < v; r++ {
-			orow := sk.O[r*m : (r+1)*m]
-			sr := vin[r]
-			for j, o := range orow {
-				sr ^= gfMul(o, x[j])
-			}
-			s[r] = sr
-		}
-		copy(s[v:], x)
 		return &kmosaic.MQSignature{S: s, Salt: salt}, nil
 	}
+	clear(s)
 	return nil, errors.New("uov: no invertible system found")
 }
 

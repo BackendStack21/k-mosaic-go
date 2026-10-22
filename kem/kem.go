@@ -157,10 +157,10 @@ func checkKnownParams(params kmosaic.MOSAICParams) error {
 }
 
 // PublicKeyHash returns the cached hash of pk, computing it if necessary.
-// The cache is trusted: keys produced by GenerateKeyPair or
-// DeserializePublicKey carry the correct hash, and a key struct edited by
-// hand (other fields changed, Hash kept) is not detected. Clear pk.Hash
-// after editing a key in memory to force recomputation.
+// The cache is used by Encapsulate (a wrong cache only mis-derandomizes the
+// caller's own encapsulation); Decapsulate recomputes the hash from the
+// key's contents and rejects a key whose cache disagrees, so an edited key
+// struct cannot be used as a key-mismatch oracle.
 func PublicKeyHash(pk *kmosaic.MOSAICPublicKey) []byte {
 	if pk == nil {
 		return nil
@@ -251,10 +251,11 @@ func EncapsulateDeterministic(pk *kmosaic.MOSAICPublicKey, ephemeralSecret []byt
 }
 
 func deriveSharedSecret(ephemeralSecret, ctBytes []byte) []byte {
-	return utils.Shake256(
-		utils.HashWithDomain(DomainSharedSecret, utils.HashConcat(ephemeralSecret, utils.SHA3256(ctBytes))),
-		SharedSecretSize,
-	)
+	inner := utils.HashConcat(ephemeralSecret, utils.SHA3256(ctBytes))
+	keyed := utils.HashWithDomain(DomainSharedSecret, inner)
+	utils.Zeroize(inner)
+	defer utils.Zeroize(keyed)
+	return utils.Shake256(keyed, SharedSecretSize)
 }
 
 // Decapsulate recovers the shared secret from a ciphertext. The public key
@@ -276,7 +277,17 @@ func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *k
 	if !secretKeyShapeValid(sk, params) {
 		return nil, fmt.Errorf("%w: malformed secret key", kmosaic.ErrInvalidKey)
 	}
-	if !utils.ConstantTimeEqual(PublicKeyHash(pk), sk.PublicKeyHash) {
+	// The hash is recomputed from the key's contents rather than read from
+	// the cache, so that a public key edited in memory (contents changed,
+	// cached hash kept) cannot bypass the key-mismatch check and turn
+	// decapsulation into a key-mismatch oracle. The cache is then
+	// consistent with the contents and is what re-encryption uses.
+	pkBytes := SerializePublicKey(pk)
+	if pkBytes == nil {
+		return nil, fmt.Errorf("%w: malformed public key", kmosaic.ErrInvalidKey)
+	}
+	pkHash := utils.SHA3256(pkBytes)
+	if !utils.ConstantTimeEqual(pkHash, sk.PublicKeyHash) || !utils.ConstantTimeEqual(pkHash, PublicKeyHash(pk)) {
 		return nil, kmosaic.ErrKeyMismatch
 	}
 
@@ -346,8 +357,8 @@ func secretKeyShapeValid(sk *kmosaic.MOSAICSecretKey, params kmosaic.MOSAICParam
 	if len(sk.SLSS.S) != params.SLSS.L*params.SLSS.N {
 		return false
 	}
-	if len(sk.Code.YPos) != params.Code.W && len(sk.Code.Y) != (params.Code.N+63)/64 {
-		return false
+	if len(sk.Code.YPos) != params.Code.W {
+		return false // the oblivious decoder needs the position list
 	}
 	return true
 }
@@ -357,10 +368,11 @@ func secretKeyShapeValid(sk *kmosaic.MOSAICSecretKey, params kmosaic.MOSAICParam
 func implicitReject(sk *kmosaic.MOSAICSecretKey, ctBytes []byte) []byte {
 	rejectKey := utils.HashWithDomain(DomainRejectKey, sk.Seed)
 	defer utils.Zeroize(rejectKey)
-	return utils.Shake256(
-		utils.HashWithDomain(DomainReject, utils.HashConcat(rejectKey, utils.SHA3256(ctBytes))),
-		SharedSecretSize,
-	)
+	inner := utils.HashConcat(rejectKey, utils.SHA3256(ctBytes))
+	keyed := utils.HashWithDomain(DomainReject, inner)
+	utils.Zeroize(inner)
+	defer utils.Zeroize(keyed)
+	return utils.Shake256(keyed, SharedSecretSize)
 }
 
 // Encrypt encrypts a message (possibly empty) using the KEM and AES-256-GCM.
@@ -407,7 +419,9 @@ func Decrypt(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, em *kmosa
 // aeadFor derives the AES-256-GCM key and nonce from a shared secret. Each
 // encapsulation yields a fresh shared secret, so the nonce is never reused.
 func aeadFor(sharedSecret []byte) (cipher.AEAD, []byte, error) {
-	encKey := utils.Shake256(utils.HashWithDomain(DomainEncKey, sharedSecret), 32)
+	keyed := utils.HashWithDomain(DomainEncKey, sharedSecret)
+	encKey := utils.Shake256(keyed, 32)
+	utils.Zeroize(keyed)
 	defer utils.Zeroize(encKey)
 	nonce := utils.Shake256(utils.HashWithDomain(DomainNonce, sharedSecret), 12)
 	block, err := aes.NewCipher(encKey)

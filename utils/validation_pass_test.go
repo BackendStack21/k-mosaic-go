@@ -32,9 +32,6 @@ func TestSamplersRejectBadArguments(t *testing.T) {
 	if SampleVectorZq(seed, 4, 0) != nil || SampleVectorZq(seed, -1, 7) != nil || SampleVectorZq(seed, 4, -7) != nil {
 		t.Error("SampleVectorZq accepted a non-positive modulus or negative length")
 	}
-	if SampleGaussianVector(seed, -1, 3.0) != nil {
-		t.Error("SampleGaussianVector accepted a negative length")
-	}
 	if Shake256(seed, -1) != nil || Shake256WithDomain("d", seed, -1) != nil {
 		t.Error("negative SHAKE output length accepted")
 	}

@@ -17,10 +17,24 @@
 // always performs the full decoding and returns K bytes together with a
 // success flag. The Reed-Solomon and Reed-Muller decoders and the field
 // arithmetic are branch-free and table-free on secret data (see
-// reedsolomon.go). The sparse-dense ring product does the same work for every
-// sparse position, but the start of the window it reads depends on the
-// position, so it is not hardened against fine-grained cache attacks; Go
-// itself gives no constant-time guarantees.
+// reedsolomon.go). The samplers are constant-time (see sampleFixedWeightPos).
+//
+// The sparse-dense ring products (h·y in KeyGen, h·r2 and s·r2 in Encrypt,
+// u·y in Decrypt) are memory-oblivious: the secret support is consumed as
+// a list of W (or WR) positions, and for each position the needed window of
+// dense||dense is selected with a barrel shifter whose stages read and write
+// every word under a mask (see ringmul.go), so the sequence of memory
+// addresses, the control flow, the number of goroutines and the split of
+// positions between them depend only on N, the weight and GOMAXPROCS. The
+// residual bit offset is applied by a 64×64→128-bit multiply by a power of
+// two rather than a shift by a secret amount; the secret only reaches AND,
+// XOR and multiply operands, assumed constant-time (true on amd64 and
+// arm64; on 32-bit targets bits.Mul64 is branch-free Go but no hardware
+// claim is made). Decrypt and SerializeSecretKey require the position list
+// sk.YPos (set by KeyGen and DeserializeSecretKey) and never scan the bits
+// of y. Not covered: Go's runtime (allocation, garbage collection,
+// goroutine scheduling), the compiler's choice of instructions, and
+// microarchitectural effects beyond the address and branch trace.
 package qcsd
 
 import (
@@ -176,23 +190,22 @@ func Encrypt(pk kmosaic.CodePublicKey, message []byte, p kmosaic.CodeParams, ran
 	return &kmosaic.CodeCiphertext{U: u, V: v}, nil
 }
 
-// secretPositions returns the sorted positions of y, from sk.YPos when it is
-// set and otherwise derived from sk.Y. ok is false if they are malformed.
-// The validity check accumulates without early exits.
-func secretPositions(sk kmosaic.CodeSecretKey, p kmosaic.CodeParams) (pos []int, derived bool, ok bool) {
+// secretPositions returns sk.YPos, the sorted positions of y, and whether
+// it is well formed: exactly W strictly increasing positions below N. Keys
+// that only carry the bit vector Y are rejected: deriving the positions
+// from Y would take a number of steps that depends on the secret (see
+// positions). The validity check accumulates without early exits.
+func secretPositions(sk kmosaic.CodeSecretKey, p kmosaic.CodeParams) (pos []int, ok bool) {
 	pos = sk.YPos
-	if len(pos) == 0 && len(sk.Y) == words(p.N) {
-		pos, derived = positions(sk.Y, p.N), true
-	}
 	if len(pos) != p.W {
-		return nil, derived, false
+		return nil, false
 	}
 	bad, prev := 0, -1
 	for _, q := range pos {
 		bad |= (q - prev - 1) | (p.N - 1 - q) // negative iff q <= prev or q >= N
 		prev = q
 	}
-	return pos, derived, bad >= 0
+	return pos, bad >= 0
 }
 
 // Decrypt decrypts a ciphertext. For well-shaped inputs it always performs
@@ -201,7 +214,8 @@ func secretPositions(sk kmosaic.CodeSecretKey, p kmosaic.CodeParams) (pos []int,
 // systematic bytes of the uncorrected Reed-Solomon word. The flag and the
 // running time do not depend on secret data. It returns (nil, 0) only if the
 // parameters, the ciphertext or the secret key have the wrong shape
-// (including non-zero padding bits in the ciphertext).
+// (including non-zero padding bits in the ciphertext, and a key without
+// the position list YPos, which KeyGen and DeserializeSecretKey provide).
 func Decrypt(ct *kmosaic.CodeCiphertext, sk kmosaic.CodeSecretKey, p kmosaic.CodeParams) (msg []byte, ok int) {
 	if ct == nil || checkParams(p) != nil {
 		return nil, 0
@@ -211,14 +225,11 @@ func Decrypt(ct *kmosaic.CodeCiphertext, sk kmosaic.CodeSecretKey, p kmosaic.Cod
 		!isCanonical(ct.U, p.N) || !isCanonical(ct.V, cl) {
 		return nil, 0
 	}
-	yPos, derived, valid := secretPositions(sk, p)
+	yPos, valid := secretPositions(sk, p)
 	if !valid {
 		return nil, 0
 	}
 	uy := mulSparse(ct.U, yPos, p.N)
-	if derived {
-		zeroInts(yPos)
-	}
 	w := uy[:words(cl)]
 	maskTop(w, cl)
 	xorInto(w, ct.V)
@@ -258,21 +269,18 @@ func SecretKeySize(p kmosaic.CodeParams) int { return 2 * p.W }
 
 // SerializeSecretKey serializes a secret key as the W sorted positions of y,
 // each a little-endian uint16. x is not stored: it is only needed to build
-// s. It returns nil if the key is malformed.
+// s. It returns nil if the key is malformed or has no YPos.
 func SerializeSecretKey(sk kmosaic.CodeSecretKey, p kmosaic.CodeParams) []byte {
 	if checkParams(p) != nil {
 		return nil
 	}
-	pos, derived, ok := secretPositions(sk, p)
+	pos, ok := secretPositions(sk, p)
 	if !ok {
 		return nil
 	}
 	out := make([]byte, SecretKeySize(p))
 	for i, q := range pos {
 		binary.LittleEndian.PutUint16(out[2*i:], uint16(q))
-	}
-	if derived {
-		zeroInts(pos)
 	}
 	return out
 }
@@ -291,7 +299,7 @@ func DeserializeSecretKey(data []byte, p kmosaic.CodeParams) (*kmosaic.CodeSecre
 	for i := range pos {
 		pos[i] = int(binary.LittleEndian.Uint16(data[2*i:]))
 	}
-	if _, _, ok := secretPositions(kmosaic.CodeSecretKey{YPos: pos}, p); !ok {
+	if _, ok := secretPositions(kmosaic.CodeSecretKey{YPos: pos}, p); !ok {
 		zeroInts(pos)
 		return nil, errors.New("invalid code secret key: positions must be strictly increasing and below N")
 	}

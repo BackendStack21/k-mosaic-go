@@ -62,32 +62,6 @@ func RandomInt(max int) (int, error) {
 	}
 }
 
-// SampleGaussianVector samples a vector of integers from a discrete Gaussian distribution.
-// It uses the Box-Muller transform on uniform random bytes generated from a seed via SHAKE256.
-// The result is rounded to the nearest integer.
-func SampleGaussianVector(seed []byte, n int, sigma float64) []int32 {
-	if n < 0 || n > math.MaxInt32/8 {
-		return nil
-	}
-	bytes := Shake256(seed, n*8)
-	result := make([]int32, n)
-
-	for i := 0; i < n; i++ {
-		// Box-Muller transform
-		u1Raw := binary.LittleEndian.Uint32(bytes[i*8:])
-		u2Raw := binary.LittleEndian.Uint32(bytes[i*8+4:])
-
-		// Map to (0, 1] and [0, 1)
-		u1 := (float64(u1Raw) + 1) / 4294967296.0
-		u2 := float64(u2Raw) / 4294967296.0
-
-		z := math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2)
-		result[i] = int32(math.Round(z * sigma))
-	}
-
-	return result
-}
-
 // SampleCenteredBinomial samples n integers from the centered binomial
 // distribution with parameter eta (mean 0, variance eta/2, support
 // [-eta, eta]). It is the deterministic, integer-only replacement for

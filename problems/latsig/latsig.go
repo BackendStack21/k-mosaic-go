@@ -119,6 +119,9 @@ func GenerateKeyPairFromSeed(params kmosaic.LatticeSignParams, seed []byte) (*km
 	}
 	utils.ZeroizeInt32(T)
 
+	// A is public and derived from Rho; the public and secret key share one
+	// backing slice to avoid an 8–16 MB copy. Nothing in this package writes
+	// to A after expansion, and wiping a secret key must not touch it.
 	publicKey := kmosaic.LatticeSignPublicKey{Params: params, Rho: rho, T1: T1, A: A}
 	publicKey.Tr = shake(TrSize, SerializePublicKey(&publicKey))
 

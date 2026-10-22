@@ -3,6 +3,7 @@ package qcsd
 import (
 	"bytes"
 	"math/rand"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -93,6 +94,16 @@ func mulSparseRef(dense []uint64, pos []int, nbits int) []uint64 {
 	acc := make([]uint64, len(dense))
 	for _, p := range pos {
 		xorInto(acc, rotateRef(dense, p, nbits))
+	}
+	return acc
+}
+
+// mulSparseNaive multiplies bit by bit: dense · Σ X^p, with repeated
+// positions contributing once per occurrence.
+func mulSparseNaive(dense []uint64, pos []int, n int) []uint64 {
+	acc := make([]uint64, words(n))
+	for _, p := range pos {
+		xorInto(acc, naiveRotate(dense, p, n))
 	}
 	return acc
 }
@@ -362,15 +373,28 @@ func TestReedMuller(t *testing.T) {
 
 func TestMulSparseMatchesReference(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
-	for _, n := range []int{64, 65, 127, 128, 1000, 17669, 57637} {
+	for _, n := range []int{1, 7, 63, 64, 65, 127, 128, 129, 191, 1000, 4096, 4097, 17669, 57637} {
 		src := randVec(rng, n)
-		for _, s := range []int{0, 1, 63, 64, 65, n - 1, n / 2, 3000 % n} {
-			if !equal(rotateRef(src, s, n), naiveRotate(src, s, n)) {
+		edges := []int{0, 1, 63, 64, 65, n - 64, n - 63, n - 2, n - 1, n / 2, 3000}
+		for _, s := range edges {
+			s = ((s % n) + n) % n
+			want := naiveRotate(src, s, n)
+			if !equal(rotateRef(src, s, n), want) {
 				t.Fatalf("reference rotate mismatch n=%d s=%d", n, s)
 			}
-			if !equal(mulSparse(src, []int{s % n}, n), naiveRotate(src, s, n)) {
+			if !equal(mulSparse(src, []int{s}, n), want) {
 				t.Fatalf("mulSparse single position mismatch n=%d s=%d", n, s)
 			}
+		}
+		// All boundary positions at once, against the bit-level reference.
+		var pos []int
+		for _, s := range edges {
+			pos = append(pos, ((s%n)+n)%n)
+		}
+		other := randVec(rng, n)
+		x1, x2 := mulSparse2(src, other, pos, n)
+		if !equal(x1, mulSparseNaive(src, pos, n)) || !equal(x2, mulSparseNaive(other, pos, n)) {
+			t.Fatalf("mulSparse2 at boundaries differs from naive reference n=%d", n)
 		}
 		for trial := 0; trial < 5; trial++ {
 			dense := randVec(rng, n)
@@ -407,6 +431,131 @@ func TestMulSparseMatchesReference(t *testing.T) {
 	if !equal(mulSparse(h, pos, 57637), x1) {
 		t.Fatal("padding bits of the dense operand leaked into the product")
 	}
+	// Empty support.
+	if !equal(mulSparse(h, nil, 57637), make([]uint64, words(57637))) {
+		t.Fatal("product with zero is not zero")
+	}
+}
+
+func TestPow2(t *testing.T) {
+	for e := uint(0); e < 64; e++ {
+		if pow2(e) != 1<<e {
+			t.Fatalf("pow2(%d) = %#x", e, pow2(e))
+		}
+	}
+}
+
+// TestMulSparseWorkerCounts checks that the result does not depend on how
+// the positions are split between goroutines.
+func TestMulSparseWorkerCounts(t *testing.T) {
+	rng := rand.New(rand.NewSource(17))
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(0))
+	for _, n := range []int{129, 4097, 57637} {
+		a, b := randVec(rng, n), randVec(rng, n)
+		pos := rng.Perm(n)[:min(n, 149)]
+		wantA, wantB := mulSparseRef(a, pos, n), mulSparseRef(b, pos, n)
+		for _, procs := range []int{1, 2, 3, 4, 7, 16} {
+			runtime.GOMAXPROCS(procs)
+			pl := newMulPlan(n, len(pos), 2)
+			if pl.workers < 1 || pl.workers > procs || (pl.workers-1)*pl.chunk >= len(pos) || pl.workers*pl.chunk < len(pos) {
+				t.Fatalf("bad split n=%d procs=%d: %+v", n, procs, pl)
+			}
+			ra, rb := mulSparse2(a, b, pos, n)
+			if !equal(ra, wantA) || !equal(rb, wantB) {
+				t.Fatalf("result depends on GOMAXPROCS=%d (n=%d)", procs, n)
+			}
+		}
+	}
+}
+
+// timingSupports returns WR-position supports of the four shapes used by
+// the obliviousness tests. The first two repeat positions (only 64 distinct
+// values exist); the multiply does not assume distinct positions.
+func timingSupports(n, w int) (names []string, sups [][]int) {
+	first, last, spread := make([]int, w), make([]int, w), make([]int, w)
+	for i := 0; i < w; i++ {
+		first[i] = i % 64
+		last[i] = n - 64 + i%64
+		spread[i] = i * n / w
+	}
+	random := rand.New(rand.NewSource(23)).Perm(n)[:w]
+	return []string{"first 64 bits", "last 64 bits", "evenly spread", "random"},
+		[][]int{first, last, spread, random}
+}
+
+// TestMulSparseOblivious checks that the work done does not depend on the
+// support: the same number of allocations (so the same number of
+// goroutines and buffers) for every support, and correct results.
+func TestMulSparseOblivious(t *testing.T) {
+	rng := rand.New(rand.NewSource(19))
+	n := core.CodeHQC256.N
+	h, s := randVec(rng, n), randVec(rng, n)
+	names, sups := timingSupports(n, core.CodeHQC256.WR)
+	var allocs []float64
+	for i, pos := range sups {
+		ra, rb := mulSparse2(h, s, pos, n)
+		if !equal(ra, mulSparseRef(h, pos, n)) || !equal(rb, mulSparseRef(s, pos, n)) {
+			t.Fatalf("%s: wrong product", names[i])
+		}
+		allocs = append(allocs, testing.AllocsPerRun(20, func() { mulSparse2(h, s, pos, n) }))
+		t.Logf("%-14s allocs/op = %v", names[i], allocs[i])
+	}
+	for i := range allocs {
+		if allocs[i] != allocs[0] {
+			t.Fatalf("allocation count depends on the support: %v", allocs)
+		}
+	}
+}
+
+// measureMul returns, for each support, the fastest time of the fused
+// multiply over interleaved rounds.
+func measureMul(h, s []uint64, sups [][]int, n, rounds, perBatch int) []time.Duration {
+	best := make([]time.Duration, len(sups))
+	for r := 0; r < rounds; r++ {
+		for j, pos := range sups {
+			start := time.Now()
+			for i := 0; i < perBatch; i++ {
+				mulSparse2(h, s, pos, n)
+			}
+			if d := time.Since(start) / time.Duration(perBatch); best[j] == 0 || d < best[j] {
+				best[j] = d
+			}
+		}
+	}
+	return best
+}
+
+// TestMulSparseTimingFlat measures that the fused multiply of Encrypt takes
+// the same time for supports concentrated in the first or last 64 bits,
+// evenly spread or random (max/min ≤ 1.15, minimum over interleaved
+// rounds, re-measured up to five times before failing). The old windowed
+// multiply read the same cache lines for every position of (a) and (b).
+func TestMulSparseTimingFlat(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("timing test skipped in -short mode and under the race detector")
+	}
+	rng := rand.New(rand.NewSource(29))
+	n := core.CodeHQC256.N
+	h, s := randVec(rng, n), randVec(rng, n)
+	names, sups := timingSupports(n, core.CodeHQC256.WR)
+	measureMul(h, s, sups, n, 2, 2) // warm-up
+	var ratio float64
+	for attempt := 0; attempt < 5; attempt++ {
+		// Single calls, minimum over many interleaved rounds: the goroutine
+		// scheduling noise of a call only ever adds time.
+		times := measureMul(h, s, sups, n, 60, 1)
+		lo, hi := times[0], times[0]
+		for i, d := range times {
+			t.Logf("mulSparse2, support %-14s: %v", names[i], d)
+			lo, hi = min(lo, d), max(hi, d)
+		}
+		ratio = float64(hi) / float64(lo)
+		t.Logf("max/min = %.3f", ratio)
+		if ratio <= 1.15 {
+			return
+		}
+	}
+	t.Errorf("multiply time varies with the support: max/min = %.3f", ratio)
 }
 
 func TestPositions(t *testing.T) {
@@ -562,10 +711,9 @@ func TestDecryptShape(t *testing.T) {
 		t.Fatal("bad params accepted")
 	}
 
-	// A key without YPos falls back to Y.
-	if m, ok := Decrypt(ct, kmosaic.CodeSecretKey{Y: kp.SecretKey.Y}, p); ok != 1 || !bytes.Equal(m, make([]byte, p.K)) {
-		t.Fatal("decryption with Y only failed")
-	}
+	// A key without YPos is rejected: deriving the positions from Y would
+	// not be constant-time.
+	check("Y without YPos", ct, kmosaic.CodeSecretKey{Y: kp.SecretKey.Y})
 }
 
 // TestDecryptFailure checks that undecodable ciphertexts are processed in
@@ -647,8 +795,8 @@ func TestSerialization(t *testing.T) {
 	if !bytes.Equal(SerializeSecretKey(*sk2, p), skb) {
 		t.Fatal("secret key re-serialization differs")
 	}
-	if !bytes.Equal(SerializeSecretKey(kmosaic.CodeSecretKey{Y: kp.SecretKey.Y}, p), skb) {
-		t.Fatal("serialization from Y only differs")
+	if SerializeSecretKey(kmosaic.CodeSecretKey{Y: kp.SecretKey.Y}, p) != nil {
+		t.Fatal("serialized a key without YPos")
 	}
 	ctb := SerializeCiphertext(ct, p)
 	if len(ctb) != (p.N+7)/8+(CodeLength(p)+7)/8 {

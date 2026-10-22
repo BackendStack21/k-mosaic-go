@@ -853,5 +853,19 @@ func DeserializeSecretKey(data []byte, params kmosaic.SLSSParams) (*kmosaic.SLSS
 		utils.ZeroizeInt8(S)
 		return nil, errors.New("invalid SLSS secret key: invalid coefficient code")
 	}
+	// Every column must have exactly W non-zero entries; the scan touches
+	// every entry regardless of value.
+	var wrong int
+	for j := 0; j < params.L; j++ {
+		nz := 0
+		for _, x := range S[j*params.N : (j+1)*params.N] {
+			nz += int(uint8(x) & 1)
+		}
+		wrong |= nz ^ params.W
+	}
+	if wrong != 0 {
+		utils.ZeroizeInt8(S)
+		return nil, errors.New("invalid SLSS secret key: column weight is not W")
+	}
 	return &kmosaic.SLSSSecretKey{S: S}, nil
 }

@@ -403,11 +403,11 @@ Serialized sizes before base64 encoding (JSON files are about 4/3 larger):
 | Signature secret key | 1.0 MB  | 1.2 MB  |
 | Signature            | 20.6 KB | 54.8 KB |
 
-Typical timings on a 4-core x86-64 container: KEM key generation 50–100 ms,
-encapsulation 1.5–2.2 ms, decapsulation about 2.4 ms; signature key
-generation 0.2–0.37 s, signing 22–50 ms, verification 3.7–4.4 ms. Loading a
-signing key costs 20–58 ms because the lattice matrix is re-expanded from its
-seed.
+Typical timings on a 4-core x86-64 container: KEM key generation 56–113 ms,
+encapsulation about 2 ms, decapsulation about 7 ms; signature key generation
+0.19–0.34 s, signing 22–56 ms, verification 4–6 ms. Loading a signing key
+costs 21–84 ms because the lattice matrix and the UOV secret key are
+re-expanded from their seeds.
 
 ## Security Considerations
 

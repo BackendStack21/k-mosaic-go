@@ -27,7 +27,9 @@ review and the 4.1 validation pass (§6), which states what has and has not
 been verified. Keys, ciphertexts and signatures from earlier versions must be
 discarded; 4.x refuses to parse them. 4.1.0 changed the sparse-vector
 samplers to constant-time ones, so keys derived from a seed differ from
-4.0.0 (the wire format is unchanged).
+4.0.0 (the wire format is unchanged). 4.2.0 made the remaining secret-data
+paths (the code component's ring multiplication, UOV signing and key
+generation) memory-oblivious without changing any key or signature.
 
 ## Overview
 
@@ -157,23 +159,23 @@ func main() {
 }
 ```
 
-## Performance and sizes (4.1.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
+## Performance and sizes (4.2.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
 
 | Operation            | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
-| KEM KeyGen           | 51 ms   | 99 ms   |
-| KEM Encapsulate      | 1.5 ms  | 2.2 ms  |
-| KEM Decapsulate      | 2.3 ms  | 2.4 ms  |
-| KEM DeserializePK    | 9 ms    | 14 ms   |
-| Sign KeyGen          | 196 ms  | 365 ms  |
-| Sign                 | 22 ms   | 50 ms   |
-| Verify               | 3.7 ms  | 4.4 ms  |
-| Sign DeserializePK   | 22 ms   | 45 ms   |
-| Sign DeserializeSK   | 20 ms   | 58 ms   |
+| KEM KeyGen           | 56 ms   | 113 ms  |
+| KEM Encapsulate      | 2.1 ms  | 2.0 ms  |
+| KEM Decapsulate      | 6.7 ms  | 7.2 ms  |
+| KEM DeserializePK    | 9 ms    | 16 ms   |
+| Sign KeyGen          | 186 ms  | 335 ms  |
+| Sign                 | 22 ms   | 56 ms   |
+| Verify               | 4–6 ms  | 4–6 ms  |
+| Sign DeserializePK   | 24 ms   | 46 ms   |
+| Sign DeserializeSK   | 21 ms   | 84 ms   |
 
-KEM key generation and encapsulation are 2–3× slower than in 4.0.0 because
-the sparse-secret products are now dense and constant-time (see
-SECURITY_ASSESSMENT.md §6.2).
+The KEM is 3× (key generation, encapsulation) to 5× (decapsulation) slower than 4.0.0
+because every secret-dependent operation is now dense or memory-oblivious
+(SECURITY_ASSESSMENT.md §6.2 and §7).
 
 | Object               | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
@@ -187,7 +189,7 @@ SECURITY_ASSESSMENT.md §6.2).
 Keys are large because the lattice components are unstructured (no polynomial
 rings); the KEM ciphertext is dominated by the 14.4 KB HQC component and the
 signature by the SLH-DSA component (17 KB / 50 KB).
-[BenchmarkReport.md](BenchmarkReport.md) holds the full 4.1.0 measurements.
+[BenchmarkReport.md](BenchmarkReport.md) holds the full 4.2.0 measurements.
 
 ## Formats and API (4.x)
 
@@ -348,12 +350,14 @@ Provenance of the figures:
   HQC construction and parameters but is not bit-compatible with the HQC
   reference (own XOF domains, sampler and bit order).
 
-Side channels: the samplers, products, decoders and reductions on the KEM
-path and in the lattice signature are constant-time by construction (see
-§6 of the assessment for what was measured). The code component's sparse
-ring multiplication still reads a window at secret-dependent offsets, and
-UOV signing uses lookup tables and a branching pivot search. Go gives no
-constant-time guarantees.
+Side channels: since 4.2.0 every operation on secret data (the samplers,
+the LWE products, the code component's ring multiplication and decoders,
+the lattice signature's arithmetic, UOV signing and key generation) is
+constant-time by construction: no branch, loop bound, memory address or
+shift amount depends on a secret (see §6.3 and §7 of the assessment for
+the arguments and measurements). What remains outside the guarantee is the
+Go runtime and compiler, the hash and AES implementations of the standard
+library, and hardware where multiplication latency depends on operands.
 
 ## Requirements
 

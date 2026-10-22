@@ -46,6 +46,10 @@ func zeroWords(v []uint64) { clear(v) }
 func zeroInts(v []int) { clear(v) }
 
 // positions lists, in increasing order, the set bits of v below nbits.
+// It is NOT constant-time: the number of iterations of the inner loop and
+// the length of the output depend on the bits of v. It is only used on
+// public data and in tests; secret supports are carried as position lists
+// from the samplers (sampleFixedWeightPos) and the key (CodeSecretKey.YPos).
 func positions(v []uint64, nbits int) []int {
 	out := make([]int, 0, weight(v))
 	for w, word := range v {
@@ -58,86 +62,6 @@ func positions(v []uint64, nbits int) []int {
 		}
 	}
 	return out
-}
-
-// window returns D, the 2n-bit vector dense||dense followed by one zero
-// guard word, so that the n bits of dense·X^p are D[n-p .. 2n-p).
-func window(dense []uint64, n int) []uint64 {
-	nw := words(n)
-	d := make([]uint64, words(2*n)+1)
-	copy(d, dense[:nw])
-	maskTop(d[:nw], n)
-	ws, bs := n/64, uint(n%64)
-	// Descending order: the second copy overlaps the first copy's top word.
-	for i := nw - 1; i >= 0; i-- {
-		x := d[i]
-		d[ws+i] |= x << bs
-		if bs != 0 {
-			d[ws+i+1] |= x >> (64 - bs)
-		}
-	}
-	return d
-}
-
-// mulWindowAcc computes acc ^= dense·sparse (before reduction of the
-// padding bits) where d = window(dense, n) and pos lists the set bits of
-// sparse, all in [0, n). The work per position is independent of its value.
-func mulWindowAcc(acc, d []uint64, pos []int, n int) {
-	nw := len(acc)
-	for _, p := range pos {
-		o := n - p // 1..n
-		lo := uint(o) & 63
-		s := d[o>>6 : o>>6+nw+1]
-		xorShifted(acc, s, lo)
-	}
-}
-
-// xorShifted computes a[i] ^= (s[i] >> lo) | (s[i+1] << (64-lo)) for every
-// i < len(a), where len(s) = len(a)+1 and lo < 64; lo = 0 contributes s[i]
-// only. Written as a leaf loop over equal-length slices so that the
-// compiler keeps everything in registers and drops the bounds checks.
-func xorShifted(a, s []uint64, lo uint) {
-	lo &= 63
-	hi := (63 - lo) & 63
-	s0 := s[:len(a)]
-	s1 := s[1 : len(a)+1]
-	i := 0
-	for ; i+4 <= len(a); i += 4 {
-		a[i] ^= s0[i]>>lo | (s1[i]<<1)<<hi
-		a[i+1] ^= s0[i+1]>>lo | (s1[i+1]<<1)<<hi
-		a[i+2] ^= s0[i+2]>>lo | (s1[i+2]<<1)<<hi
-		a[i+3] ^= s0[i+3]>>lo | (s1[i+3]<<1)<<hi
-	}
-	for ; i < len(a); i++ {
-		a[i] ^= s0[i]>>lo | (s1[i]<<1)<<hi
-	}
-}
-
-// mulSparse computes dense · sparse in F_2[X]/(X^n - 1), where sparse is
-// given by its set bit positions (each in [0, n)). The result is canonical.
-func mulSparse(dense []uint64, sparsePos []int, n int) []uint64 {
-	d := window(dense, n)
-	acc := make([]uint64, words(n))
-	mulWindowAcc(acc, d, sparsePos, n)
-	maskTop(acc, n)
-	return acc
-}
-
-// mulSparse2 computes (a·sparse, b·sparse) in one fused pass over the
-// sparse positions (both windows stay hot in cache).
-func mulSparse2(a, b []uint64, sparsePos []int, n int) ([]uint64, []uint64) {
-	da, db := window(a, n), window(b, n)
-	ra, rb := make([]uint64, words(n)), make([]uint64, words(n))
-	nw := len(ra)
-	for _, p := range sparsePos {
-		o := n - p // 1..n
-		lo := uint(o) & 63
-		xorShifted(ra, da[o>>6:o>>6+nw+1], lo)
-		xorShifted(rb, db[o>>6:o>>6+nw+1], lo)
-	}
-	maskTop(ra, n)
-	maskTop(rb, n)
-	return ra, rb
 }
 
 // sampleUniform derives an nbits-bit uniform canonical vector from seed.

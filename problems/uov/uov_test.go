@@ -160,7 +160,7 @@ func solveBytes(L, y []byte, m int) ([]byte, bool) {
 		row[m] = y[r]
 		packBytes(A[r*wa:(r+1)*wa], row)
 	}
-	if !solve(A, m, wa, make([]uint64, 32*wa)) {
+	if solve(A, m, wa, make([]uint64, 8*wa)) != 0 {
 		return nil, false
 	}
 	x := make([]byte, m)
@@ -278,16 +278,26 @@ func TestPreparedEvaluateMatchesBasic(t *testing.T) {
 				t.Fatalf("%s: prepared evaluation differs from block evaluation", ps.name)
 			}
 		}
-		// The secret signing layout evaluates vᵀ P1 v consistently with P1.
-		vin := randBytes(t, d.v)
-		got := make([]uint64, d.w)
-		evalBuckets(got, make([]uint64, 256*d.w), kp.SecretKey.Prepared[:d.t1*d.stride], vin)
-		gotB := make([]byte, d.m)
-		unpackBytes(gotB, got)
-		full := make([]byte, p.N)
-		copy(full, vin) // oil part zero: only the P1 blocks contribute
-		if !bytes.Equal(gotB, evaluateBasic(d, pk.P1, pk.P2, pk.P3, full)) {
-			t.Fatalf("%s: signing layout evaluation of P1 is wrong", ps.name)
+		// The secret signing layout evaluates vᵀ P1 v consistently with P1,
+		// both with the constant-time evaluation used by signing and with
+		// the bucket evaluation used by verification.
+		for _, vin := range [][]byte{randBytes(t, d.v), make([]byte, d.v), bytes.Repeat([]byte{0xFF}, d.v)} {
+			full := make([]byte, p.N)
+			copy(full, vin) // oil part zero: only the P1 blocks contribute
+			want := evaluateBasic(d, pk.P1, pk.P2, pk.P3, full)
+			p1Prep := kp.SecretKey.Prepared[:d.t1*d.stride]
+			got := make([]uint64, d.w)
+			evalBuckets(got, make([]uint64, 256*d.w), p1Prep, vin)
+			gotB := make([]byte, d.m)
+			unpackBytes(gotB, got)
+			if !bytes.Equal(gotB, want) {
+				t.Fatalf("%s: bucket evaluation of the signing layout is wrong", ps.name)
+			}
+			evalP1CT(got, make([]uint64, 8*d.w), make([]uint64, d.w), p1Prep, vin)
+			unpackBytes(gotB, got)
+			if !bytes.Equal(gotB, want) {
+				t.Fatalf("%s: constant-time evaluation of the signing layout is wrong", ps.name)
+			}
 		}
 	}
 }

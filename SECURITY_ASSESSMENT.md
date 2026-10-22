@@ -21,7 +21,10 @@ random-oracle model; the implementation passed an adversarial review of
 seven independent briefs with no cryptographic break, and every defect that
 review found has been fixed. "Stronger" holds only against cryptanalysis of
 the problems, and "bug free" is not a claim anyone can verify: §6.4 lists
-what was tested, §6.5 what remains open.
+what was tested, §6.5 what remains open. **Section 7 (4.2.0)** closes the
+open items that code can close: every operation on secret data is now
+memory-oblivious, the key-mismatch check no longer trusts a cached hash,
+and parsed secret keys are validated structurally.
 
 ---
 
@@ -593,6 +596,9 @@ evidence of absence beyond what was tried.
 
 ### 6.5 Still open after 4.1.0
 
+*(Superseded by §7.3 for the side-channel, cached-hash and dead-code
+items; the rest still stands.)*
+
 - **Not externally reviewed.** The seven briefs were run inside this project.
   No cryptographer outside it has examined the composition, the SLSS
   parameters, the lattice-signature transplant or the implementation.
@@ -627,3 +633,58 @@ ciphertext or forge a signature. That is the strongest statement the
 evidence supports: *no known bugs, after an adversarial review whose scope
 is listed in §6.4*. It is not "bug free", and the library should still not
 be used where a failure would matter.
+
+---
+
+## 7. Version 4.2.0: closing the open items
+
+4.2.0 addresses every item of §6.5 that code can address. No key, ciphertext
+or signature changed: for fixed seeds, the UOV keys and signatures and the
+code-component key generation, encryption and decryption outputs are
+bit-identical to 4.1.0 (pinned by digests in `problems/uov/ct_test.go` and
+checked against an unmodified copy for 20 seeds during development).
+
+### 7.1 Side channels closed
+
+| Item (§6.3/§6.5) | Change | Argument |
+| --- | --- | --- |
+| Code component's sparse ring multiplication read a window of the doubled vector at a word offset given by the secret position (key generation, encryption inside re-encryption, decryption). | `problems/qcsd/ringmul.go`: for each position the 902-word window is selected by a 10-stage barrel shifter whose every stage reads and writes buffers of fixed length (1413 … 902 words) under an AND mask, and the bit offset is applied with one `bits.Mul64` per word by a multiplier built from public constants (no shift by a secret amount). The two products of encryption share the masks. Work is split across goroutines by public quantities only. `Decrypt` no longer derives positions from the bit vector; keys must carry their position list. | Secret positions flow only into AND masks, XOR operands and multiplier operands. Loop bounds, slice offsets, buffer lengths, goroutine count and chunk boundaries depend on n, the weight, the operand count and GOMAXPROCS. Verified by reference comparison at every wrap-around boundary for 14 ring lengths, identical results for GOMAXPROCS 1–16, identical allocation counts for four supports, and an interleaved timing test over supports in the first 64 bits, the last 64 bits, evenly spread and random (max/min 1.006–1.01 single-threaded, 1.04–1.08 with 4 cores). |
+| UOV signing used GF(2^8) lookup tables, bucket indices and a branching pivot search on secret data; key generation multiplied the secret oil matrix through tables. | `problems/uov`: packed constant-time field arithmetic (eight elements per word, doubling by shifts and xors, scalar products through masked doubling tables, inversion by a fixed addition chain), bit-plane accumulation of vᵀS_i and vᵀP1v with the vinegar values as masks, masked Gauss-Jordan elimination in the style of the UOV reference (every lower row conditionally added to the pivot row, singularity returned as a flag after the whole elimination), and masked products for s = v + O·x and for P3 in key generation. Verification and public-key expansion keep the tables (public data). Signing draws randomness through the library's injectable RNG. | Loop bounds, row and word indices and shift amounts depend only on m, v and the column index; the amd64 disassembly of the field primitives has no conditional jumps. Exhaustive equality with the table arithmetic (all 65,536 products, all 256 inverses). Interleaved timing tests: signing attempts with zero vinegar (singular), an adversarial anti-identity system, constant 0xFF vinegar and random vinegar give max/min 1.03–1.11; the solver alone 1.006 (it used to take 1.9 µs on a zero matrix against 197 µs on a random one). Allocation counts do not depend on the message. The retry on a singular system is visible, as in the reference. |
+| Key-mismatch check trusted the cached public-key hash. | `kem.Decapsulate` recomputes SHA3-256 over the serialized public key and requires it to equal both the secret key's stored hash and the cache. | A public key edited in memory, with or without its cache, is rejected (`TestDecapsulateRecomputesPublicKeyHash`). Cost about 1 ms per decapsulation. |
+| Parsed KEM secret keys were not validated beyond their encoding. | `slss.DeserializeSecretKey` requires every column to have exactly W non-zero entries (scanning every entry); the code component requires a strictly increasing position list below N (unchanged) and the KEM requires it to be present. | Corrupted or hand-built keys fail at parse time instead of silently producing rejection values. |
+| Floating-point Gaussian sampler left in `utils`. | Removed (`SampleGaussianVector`); nothing used it. | Less attack surface; no float arithmetic remains in the library. |
+| Intermediate hash outputs on the KEM path were not wiped. | The keyed inputs of the shared-secret, rejection and AES-key derivations are zeroized after use. | Best-effort only; see §7.3. |
+
+### 7.2 Cost
+
+Measured on the same 4-core container (BenchmarkReport.md has the full
+table). KEM decapsulation 2.3 / 2.4 → 6.7 / 7.2 ms (two oblivious
+multiplications in decryption plus two in re-encryption, and the hash
+recomputation); encapsulation 1.5 / 2.2 → 2.1 / 2.0 ms; KEM key generation
+51 / 99 → 56 / 113 ms. UOV signing 0.24 / 2.1 → 0.56 / 4.1 ms and UOV key
+generation 4.9 / 69 → 8.6 / 172 ms, which is hidden inside the parallel
+composite signing but visible in composite key generation and in loading a
+MOS-256 signing key (58 → 84 ms).
+
+### 7.3 Still open after 4.2.0
+
+- **Not externally reviewed.** Everything in §6 and §7 was done inside this
+  project.
+- **What "constant-time" means here.** No branch, loop bound, memory address
+  or shift amount depends on secret data in the library's own code, verified
+  by reading, by disassembly of the field primitives, and by interleaved
+  timing tests. Not covered: the Go compiler's instruction selection (the
+  language does not promise branch-free code for masked expressions; today's
+  amd64 output is branch-free), the Go runtime (allocation, garbage
+  collection and scheduling add timing noise that does not depend on the
+  data), the standard library's SHA-3 and AES (constant-time on current
+  hardware per Go's own documentation, not verified here), hardware whose
+  64-bit multiply latency depends on operands, and the lattice signature's
+  rejection sampling, which branches exactly as FIPS 204 does.
+- **Parameter estimates** for SLSS are this repository's own (§6.1), and the
+  lattice signature's levels are by analogy to ML-DSA.
+- **QROM**: only the generic, non-tight FO⊥̸ results apply.
+- **HQC interoperability**: not bit-compatible with the HQC reference.
+- **Zeroization** is best-effort; Go's runtime copies and the hash and AES
+  internals are not wiped.
+- **No SIMD**; key generation is 56–335 ms.

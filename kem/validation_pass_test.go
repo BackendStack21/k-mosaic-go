@@ -93,3 +93,23 @@ func TestDecapsulateRejectsMalformedSecretKey(t *testing.T) {
 		t.Fatalf("secret key without components accepted: %v", err)
 	}
 }
+
+// TestDecapsulateRecomputesPublicKeyHash pins the fix for the key-mismatch
+// check trusting the cached hash: a public key whose contents were edited
+// in memory while its cached hash was kept must be rejected.
+func TestDecapsulateRecomputesPublicKeyHash(t *testing.T) {
+	kp, _ := GenerateKeyPair(kmosaic.MOS_128)
+	res, _ := Encapsulate(&kp.PublicKey)
+	edited := kp.PublicKey
+	edited.SLSS = kmosaic.SLSSPublicKey{Seed: kp.PublicKey.SLSS.Seed, A: kp.PublicKey.SLSS.A, T: append([]int32{}, kp.PublicKey.SLSS.T...)}
+	edited.SLSS.T[0] ^= 1
+	if _, err := Decapsulate(&kp.SecretKey, &edited, &res.Ciphertext); !errors.Is(err, kmosaic.ErrKeyMismatch) {
+		t.Fatalf("edited public key with stale cached hash accepted: %v", err)
+	}
+	stale := kp.PublicKey
+	stale.Hash = append([]byte{}, kp.PublicKey.Hash...)
+	stale.Hash[0] ^= 1
+	if _, err := Decapsulate(&kp.SecretKey, &stale, &res.Ciphertext); !errors.Is(err, kmosaic.ErrKeyMismatch) {
+		t.Fatalf("public key with a wrong cached hash accepted: %v", err)
+	}
+}
