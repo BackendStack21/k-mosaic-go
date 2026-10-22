@@ -39,12 +39,14 @@ const (
 // seed, S ∈ {-1,0,1}^{N×L} with W non-zero entries per column and E ∈ Z^{M×L}
 // discrete Gaussian. Each of the L secret columns protects one message bit.
 type SLSSParams struct {
-	N     int     `json:"n"`     // Secret dimension (columns of A)
-	M     int     `json:"m"`     // Number of LWE samples (rows of A)
-	Q     int     `json:"q"`     // Prime modulus
-	W     int     `json:"w"`     // Non-zero entries per secret column
-	Sigma float64 `json:"sigma"` // Error standard deviation
-	L     int     `json:"l"`     // Secret columns = message bits per ciphertext
+	N   int `json:"n"`   // Secret dimension (columns of A)
+	M   int `json:"m"`   // Number of LWE samples (rows of A)
+	Q   int `json:"q"`   // Prime modulus (must be 12289)
+	W   int `json:"w"`   // Non-zero entries per secret column
+	Eta int `json:"eta"` // Errors are centered binomial with parameter Eta (variance Eta/2)
+	L   int `json:"l"`   // Secret columns = message bits per ciphertext
+	DU  int `json:"du"`  // Bits kept per coefficient of u after compression
+	DV  int `json:"dv"`  // Bits kept per coefficient of v after compression
 }
 
 // SLSSPublicKey is the public key for SLSS.
@@ -59,10 +61,11 @@ type SLSSSecretKey struct {
 	S []int8 // L x N matrix (flattened, row-major) of sparse ternary columns: S[j*N+i] = s_j[i]
 }
 
-// SLSSCiphertext is the ciphertext for SLSS encryption.
+// SLSSCiphertext is the ciphertext for SLSS encryption. U and V hold the
+// compressed coefficients (DU and DV bits each) exactly as serialized.
 type SLSSCiphertext struct {
-	U []int32
-	V []int32
+	U []int32 // N entries in [0, 2^DU)
+	V []int32 // L entries in [0, 2^DV)
 }
 
 // SLSSKeyPair contains both public and secret keys for SLSS.
@@ -99,8 +102,9 @@ type CodePublicKey struct {
 
 // CodeSecretKey is the secret key for the code-based component.
 type CodeSecretKey struct {
-	X []uint64 // x as an N-bit vector of weight W
-	Y []uint64 // y as an N-bit vector of weight W
+	X    []uint64 // x as an N-bit vector of weight W
+	Y    []uint64 // y as an N-bit vector of weight W
+	YPos []int    // Sorted positions of the set bits of y; derived, not serialized
 }
 
 // CodeCiphertext is the ciphertext for the code-based component.
@@ -128,21 +132,26 @@ type CodeKeyPair struct {
 type LatticeSignParams struct {
 	N          int `json:"n"`           // Columns of A; dimension of the mask y and response z
 	M          int `json:"m"`           // Rows of A; dimension of the commitment w
-	L          int `json:"l"`           // Columns of S1/S2/T; length of the challenge vector c
-	Q          int `json:"q"`           // Prime modulus
+	L          int `json:"l"`           // Columns of S1/S2/T; length of the challenge vector c (256)
+	Q          int `json:"q"`           // Prime modulus (must be 8380417)
 	Eta        int `json:"eta"`         // Secret entries are uniform in [-Eta, Eta]
-	Tau        int `json:"tau"`         // Number of ±1 entries in the challenge c
-	Gamma1     int `json:"gamma1"`      // Mask y is uniform in (-Gamma1, Gamma1]
-	Gamma2     int `json:"gamma2"`      // Low-order rounding range; HighBits use alpha = 2*Gamma2
+	Tau        int `json:"tau"`         // Number of ±1 entries in the challenge c (at most 64)
+	Gamma1     int `json:"gamma1"`      // Mask y is uniform in (-Gamma1, Gamma1] (2^19)
+	Gamma2     int `json:"gamma2"`      // Low-order rounding range; HighBits use alpha = 2*Gamma2 ((Q-1)/32)
 	Beta       int `json:"beta"`        // Tau*Eta: bound on ||S1·c||∞ and ||S2·c||∞
+	D          int `json:"d"`           // Dropped bits of T (Power2Round), 13
+	Omega      int `json:"omega"`       // Maximum number of hint bits in a signature
 	CTildeSize int `json:"ctilde_size"` // Bytes of the challenge hash c̃
 }
 
 // LatticeSignPublicKey is the public key of the lattice signature component.
+// T = A·S1 + S2 is split by Power2Round into T1 (high bits, public) and T0
+// (low bits, kept in the secret key), as in FIPS 204.
 type LatticeSignPublicKey struct {
 	Params LatticeSignParams
 	Rho    []byte  // 32-byte public seed from which A is expanded
-	T      []int32 // M x L matrix (flattened, row-major): T = A·S1 + S2 mod Q
+	T1     []int32 // M x L matrix (flattened, row-major) of 10-bit high parts of T
+	Tr     []byte  // 64-byte hash of the serialized public key; derived, not serialized
 	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
 }
 
@@ -154,6 +163,7 @@ type LatticeSignSecretKey struct {
 	Tr     []byte  // 64-byte hash of the serialized public key
 	S1     []int8  // N x L matrix (flattened, row-major), entries in [-Eta, Eta]
 	S2     []int8  // M x L matrix (flattened, row-major), entries in [-Eta, Eta]
+	T0     []int32 // M x L matrix of low parts of T, entries in (-2^(D-1), 2^(D-1)]
 	A      []int32 // M x N matrix expanded from Rho; derived, not serialized
 }
 
@@ -163,10 +173,13 @@ type LatticeSignKeyPair struct {
 	SecretKey LatticeSignSecretKey
 }
 
-// LatticeSignature is a lattice signature: the challenge hash c̃ and the response z.
+// LatticeSignature is a lattice signature: the challenge hash c̃, the
+// response z and the hint vector that lets the verifier recover HighBits(A·y)
+// from the compressed public key.
 type LatticeSignature struct {
-	Challenge []byte  // c̃ = H(μ || HighBits(A·y)), CTildeSize bytes
-	Z         []int32 // z = y + S1·c, N entries with ||z||∞ < Gamma1 - Beta
+	Challenge []byte   // c̃ = H(μ || HighBits(A·y)), CTildeSize bytes
+	Z         []int32  // z = y + S1·c, N entries with ||z||∞ < Gamma1 - Beta
+	Hint      []uint16 // Sorted indices (into the M-vector w) of set hint bits, at most Omega
 }
 
 // =============================================================================
@@ -184,19 +197,21 @@ type MQParams struct {
 // MQPublicKey is a compressed UOV public key: the seed that expands the P1
 // and P2 blocks of every public quadratic form, plus the P3 blocks.
 type MQPublicKey struct {
-	Seed []byte // 16-byte public seed
-	P3   []byte // M blocks of M(M+1)/2 upper-triangular entries
-	P1   []byte // M blocks of V(V+1)/2 entries, expanded from Seed; not serialized
-	P2   []byte // M blocks of V*M entries, expanded from Seed; not serialized
+	Seed     []byte // 16-byte public seed
+	P3       []byte // M blocks of M(M+1)/2 upper-triangular entries
+	P1       []byte // M blocks of V(V+1)/2 entries, expanded from Seed; not serialized
+	P2       []byte // M blocks of V*M entries, expanded from Seed; not serialized
+	Prepared []byte // Evaluation-optimized layout of all forms; derived, not serialized
 }
 
 // MQSecretKey is an expanded UOV secret key.
 type MQSecretKey struct {
-	Seed   []byte // 32-byte secret seed
-	PKSeed []byte // 16-byte public seed
-	O      []byte // V x M oil matrix (row-major)
-	P1     []byte // as in the public key
-	S      []byte // M blocks of V x M matrices S_i = (P1_i + P1_i^T)·O + P2_i
+	Seed     []byte // 32-byte secret seed
+	PKSeed   []byte // 16-byte public seed
+	O        []byte // V x M oil matrix (row-major)
+	P1       []byte // as in the public key
+	S        []byte // M blocks of V x M matrices S_i = (P1_i + P1_i^T)·O + P2_i
+	Prepared []byte // Signing-optimized layout; derived, not serialized
 }
 
 // MQKeyPair contains both keys of the MQ signature component.
@@ -269,6 +284,7 @@ type MOSAICPublicKey struct {
 	Code    CodePublicKey
 	Binding []byte // 32-byte binding hash of the component public keys
 	Params  MOSAICParams
+	Hash    []byte // 32-byte hash of the serialized public key; derived, not serialized
 }
 
 // MOSAICSecretKey is the composite KEM secret key.
@@ -287,9 +303,8 @@ type MOSAICKeyPair struct {
 
 // MOSAICCiphertext is the composite ciphertext from KEM encapsulation.
 type MOSAICCiphertext struct {
-	C1    SLSSCiphertext
-	C2    CodeCiphertext
-	Proof []byte // Hash binding of the shares to the component ciphertexts
+	C1 SLSSCiphertext
+	C2 CodeCiphertext
 }
 
 // EncapsulationResult contains the result of KEM encapsulation.
@@ -298,11 +313,11 @@ type EncapsulationResult struct {
 	Ciphertext   MOSAICCiphertext
 }
 
-// EncryptedMessage contains an encrypted message with its ciphertext.
+// EncryptedMessage contains an encrypted message with its KEM ciphertext.
+// The AES-GCM nonce is derived from the shared secret and is not stored.
 type EncryptedMessage struct {
 	Ciphertext MOSAICCiphertext
-	Encrypted  []byte // Encrypted payload
-	Nonce      []byte // Nonce for symmetric encryption
+	Encrypted  []byte // AES-256-GCM payload including the authentication tag
 }
 
 // =============================================================================
@@ -324,6 +339,7 @@ type MOSAICSignPublicKey struct {
 	MQ      MQPublicKey
 	Hash    HashSignPublicKey
 	Binding []byte // 32-byte binding hash of the component public keys
+	KeyHash []byte // 64-byte hash of the serialized public key; derived, not serialized
 }
 
 // MOSAICSignSecretKey is the composite signature secret key.
@@ -342,9 +358,12 @@ type MOSAICSignKeyPair struct {
 	SecretKey MOSAICSignSecretKey
 }
 
-// MOSAICSignature is the composite signature: all three component signatures
-// on the same bound digest. Verification requires all three to be valid.
+// MOSAICSignature is the composite signature: a fresh nonce and all three
+// component signatures on the digest H(pk hash || nonce || message).
+// Verification requires all three to be valid; the nonce binds the three
+// components to one another so they cannot be recombined across signatures.
 type MOSAICSignature struct {
+	Nonce   []byte // 32 bytes
 	Lattice LatticeSignature
 	MQ      MQSignature
 	Hash    HashSignature

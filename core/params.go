@@ -11,6 +11,9 @@ import (
 // LatticeSignQ is the modulus of the lattice signature component (2^23 - 2^13 + 1).
 const LatticeSignQ = 8380417
 
+// SLSSQ is the modulus of the SLSS component.
+const SLSSQ = 12289
+
 // CodeHQC256 is the quasi-cyclic syndrome-decoding parameter set, identical
 // to NIST's hqc-256 (level 5): ring length 57637, Reed-Solomon [90,32] with
 // correction capability 29, Reed-Muller RM(1,7) duplicated 5 times, secret
@@ -36,12 +39,14 @@ var CodeHQC256 = kmosaic.CodeParams{
 var MOS128Params = kmosaic.MOSAICParams{
 	Level: kmosaic.MOS128,
 	SLSS: kmosaic.SLSSParams{
-		N:     768,
-		M:     768,
-		Q:     12289,
-		W:     192,
-		Sigma: 3.19,
-		L:     256,
+		N:   768,
+		M:   768,
+		Q:   SLSSQ,
+		W:   192,
+		Eta: 20,
+		L:   256,
+		DU:  11,
+		DV:  5,
 	},
 	Code: CodeHQC256,
 }
@@ -53,12 +58,14 @@ var MOS128Params = kmosaic.MOSAICParams{
 var MOS256Params = kmosaic.MOSAICParams{
 	Level: kmosaic.MOS256,
 	SLSS: kmosaic.SLSSParams{
-		N:     1152,
-		M:     1152,
-		Q:     12289,
-		W:     288,
-		Sigma: 3.19,
-		L:     256,
+		N:   1152,
+		M:   1152,
+		Q:   SLSSQ,
+		W:   288,
+		Eta: 20,
+		L:   256,
+		DU:  11,
+		DV:  5,
 	},
 	Code: CodeHQC256,
 }
@@ -78,6 +85,8 @@ var Lattice128Params = kmosaic.LatticeSignParams{
 	Gamma1:     1 << 19,
 	Gamma2:     (LatticeSignQ - 1) / 32,
 	Beta:       49 * 4,
+	D:          13,
+	Omega:      55,
 	CTildeSize: 48,
 }
 
@@ -94,6 +103,8 @@ var Lattice256Params = kmosaic.LatticeSignParams{
 	Gamma1:     1 << 19,
 	Gamma2:     (LatticeSignQ - 1) / 32,
 	Beta:       60 * 2,
+	D:          13,
+	Omega:      75,
 	CTildeSize: 64,
 }
 
@@ -184,17 +195,20 @@ func ValidateParams(params kmosaic.MOSAICParams) error {
 	if params.SLSS.W <= 0 || params.SLSS.W > params.SLSS.N {
 		return errors.New("SLSS sparsity must be in (0, n]")
 	}
-	if !isPrime(params.SLSS.Q) {
-		return errors.New("SLSS modulus must be prime")
+	if params.SLSS.Q != SLSSQ {
+		return errors.New("SLSS modulus must be 12289")
 	}
 	if params.SLSS.M < params.SLSS.N {
 		return errors.New("SLSS m must be at least n: the ciphertext LWE instance has dimension m")
 	}
-	if params.SLSS.Sigma < 3.0 {
-		return errors.New("SLSS sigma should be at least 3.0")
+	if params.SLSS.Eta < 16 || params.SLSS.Eta > 64 {
+		return errors.New("SLSS eta must be in [16, 64]")
 	}
 	if params.SLSS.L <= 0 || params.SLSS.L%8 != 0 {
 		return errors.New("SLSS L must be a positive multiple of 8")
+	}
+	if params.SLSS.DU < 10 || params.SLSS.DU > 14 || params.SLSS.DV < 4 || params.SLSS.DV > 14 {
+		return errors.New("SLSS compression bits out of range")
 	}
 	if err := ValidateCodeParams(params.Code); err != nil {
 		return err
@@ -227,14 +241,20 @@ func ValidateCodeParams(p kmosaic.CodeParams) error {
 
 // ValidateLatticeSignParams validates a lattice signature parameter set.
 func ValidateLatticeSignParams(p kmosaic.LatticeSignParams) error {
-	if p.N <= 0 || p.M <= 0 || p.L <= 0 {
-		return errors.New("lattice signature dimensions must be positive")
+	if p.N <= 0 || p.M <= 0 || p.N%256 != 0 || p.M%256 != 0 {
+		return errors.New("lattice signature dimensions must be positive multiples of 256")
+	}
+	if p.L != 256 {
+		return errors.New("lattice signature challenge length must be 256")
 	}
 	if p.Q != LatticeSignQ {
 		return errors.New("lattice signature modulus must be 8380417")
 	}
-	if p.Eta <= 0 || p.Tau <= 0 || p.Tau > p.L {
-		return errors.New("invalid eta or tau")
+	if p.Eta != 2 && p.Eta != 4 {
+		return errors.New("eta must be 2 or 4")
+	}
+	if p.Tau <= 0 || p.Tau > 64 {
+		return errors.New("tau must be in (0, 64]")
 	}
 	if p.Beta != p.Tau*p.Eta {
 		return errors.New("beta must equal tau*eta")
@@ -242,11 +262,17 @@ func ValidateLatticeSignParams(p kmosaic.LatticeSignParams) error {
 	if p.Gamma1 != 1<<19 {
 		return errors.New("gamma1 must be 2^19")
 	}
-	if p.Gamma2 <= p.Beta || (p.Q-1)%(2*p.Gamma2) != 0 {
-		return errors.New("gamma2 must exceed beta and 2*gamma2 must divide q-1")
+	if p.Gamma2 != (LatticeSignQ-1)/32 {
+		return errors.New("gamma2 must be (q-1)/32")
 	}
-	if p.CTildeSize < 32 {
-		return errors.New("challenge hash must be at least 32 bytes")
+	if p.D != 13 {
+		return errors.New("d must be 13")
+	}
+	if p.Omega <= 0 || p.Omega > p.M {
+		return errors.New("omega out of range")
+	}
+	if p.CTildeSize < 32 || p.CTildeSize > 64 {
+		return errors.New("challenge hash must be between 32 and 64 bytes")
 	}
 	return nil
 }

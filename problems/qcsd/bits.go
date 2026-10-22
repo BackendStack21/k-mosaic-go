@@ -1,14 +1,15 @@
 package qcsd
 
 import (
+	"crypto/sha3"
 	"encoding/binary"
 	"errors"
-
-	"golang.org/x/crypto/sha3"
+	"math/bits"
 )
 
 // Bit vectors over F_2 stored little-endian in uint64 words. A vector of n
 // bits is an element of F_2[X]/(X^n - 1) with bit i the coefficient of X^i.
+// Vectors are canonical when every bit at index >= n is zero.
 
 func words(nbits int) int { return (nbits + 63) / 64 }
 
@@ -22,94 +23,129 @@ func maskTop(v []uint64, nbits int) {
 	}
 }
 
+// isCanonical reports whether every bit of v at index >= nbits is zero.
+func isCanonical(v []uint64, nbits int) bool {
+	if nbits%64 == 0 || len(v) == 0 {
+		return true
+	}
+	return v[len(v)-1]>>(uint(nbits)%64) == 0
+}
+
 // xorInto computes dst ^= src.
 func xorInto(dst, src []uint64) {
+	src = src[:len(dst)]
 	for i := range dst {
 		dst[i] ^= src[i]
 	}
 }
 
-// shiftLeft returns src << s truncated to nbits (bits that would pass nbits are dropped).
-func shiftLeft(src []uint64, s, nbits int) []uint64 {
-	nw := len(src)
-	dst := make([]uint64, nw)
-	ws, bs := s/64, uint(s%64)
-	for i := nw - 1; i >= ws; i-- {
-		dst[i] = src[i-ws] << bs
-		if bs != 0 && i-ws-1 >= 0 {
-			dst[i] |= src[i-ws-1] >> (64 - bs)
-		}
-	}
-	maskTop(dst, nbits)
-	return dst
-}
+// zeroWords overwrites v with zeros.
+func zeroWords(v []uint64) { clear(v) }
 
-// shiftRight returns src >> s.
-func shiftRight(src []uint64, s int) []uint64 {
-	nw := len(src)
-	dst := make([]uint64, nw)
-	ws, bs := s/64, uint(s%64)
-	for i := 0; i+ws < nw; i++ {
-		dst[i] = src[i+ws] >> bs
-		if bs != 0 && i+ws+1 < nw {
-			dst[i] |= src[i+ws+1] << (64 - bs)
-		}
-	}
-	return dst
-}
+// zeroInts overwrites v with zeros.
+func zeroInts(v []int) { clear(v) }
 
-// rotate returns src · X^s in F_2[X]/(X^nbits - 1): bit i moves to (i+s) mod nbits.
-func rotate(src []uint64, s, nbits int) []uint64 {
-	s %= nbits
-	if s == 0 {
-		return append([]uint64{}, src...)
-	}
-	lo := shiftLeft(src, s, nbits)
-	hi := shiftRight(src, nbits-s)
-	xorInto(lo, hi)
-	return lo
-}
-
-// positions lists the set bits of v below nbits.
+// positions lists, in increasing order, the set bits of v below nbits.
 func positions(v []uint64, nbits int) []int {
-	var out []int
+	out := make([]int, 0, weight(v))
 	for w, word := range v {
 		for word != 0 {
-			b := word & -word
-			i := w*64 + bitIndex(b)
+			i := w*64 + bits.TrailingZeros64(word)
 			if i < nbits {
 				out = append(out, i)
 			}
-			word ^= b
+			word &= word - 1
 		}
 	}
 	return out
 }
 
-func bitIndex(b uint64) int {
-	n := 0
-	for b > 1 {
-		b >>= 1
-		n++
+// window returns D, the 2n-bit vector dense||dense followed by one zero
+// guard word, so that the n bits of dense·X^p are D[n-p .. 2n-p).
+func window(dense []uint64, n int) []uint64 {
+	nw := words(n)
+	d := make([]uint64, words(2*n)+1)
+	copy(d, dense[:nw])
+	maskTop(d[:nw], n)
+	ws, bs := n/64, uint(n%64)
+	// Descending order: the second copy overlaps the first copy's top word.
+	for i := nw - 1; i >= 0; i-- {
+		x := d[i]
+		d[ws+i] |= x << bs
+		if bs != 0 {
+			d[ws+i+1] |= x >> (64 - bs)
+		}
 	}
-	return n
+	return d
 }
 
-// mulSparse computes dense · sparse where sparse is given by its set bit positions.
-func mulSparse(dense []uint64, sparsePos []int, nbits int) []uint64 {
-	acc := make([]uint64, len(dense))
-	for _, p := range sparsePos {
-		xorInto(acc, rotate(dense, p, nbits))
+// mulWindowAcc computes acc ^= dense·sparse (before reduction of the
+// padding bits) where d = window(dense, n) and pos lists the set bits of
+// sparse, all in [0, n). The work per position is independent of its value.
+func mulWindowAcc(acc, d []uint64, pos []int, n int) {
+	nw := len(acc)
+	for _, p := range pos {
+		o := n - p // 1..n
+		lo := uint(o) & 63
+		s := d[o>>6 : o>>6+nw+1]
+		xorShifted(acc, s, lo)
 	}
+}
+
+// xorShifted computes a[i] ^= (s[i] >> lo) | (s[i+1] << (64-lo)) for every
+// i < len(a), where len(s) = len(a)+1 and lo < 64; lo = 0 contributes s[i]
+// only. Written as a leaf loop over equal-length slices so that the
+// compiler keeps everything in registers and drops the bounds checks.
+func xorShifted(a, s []uint64, lo uint) {
+	lo &= 63
+	hi := (63 - lo) & 63
+	s0 := s[:len(a)]
+	s1 := s[1 : len(a)+1]
+	i := 0
+	for ; i+4 <= len(a); i += 4 {
+		a[i] ^= s0[i]>>lo | (s1[i]<<1)<<hi
+		a[i+1] ^= s0[i+1]>>lo | (s1[i+1]<<1)<<hi
+		a[i+2] ^= s0[i+2]>>lo | (s1[i+2]<<1)<<hi
+		a[i+3] ^= s0[i+3]>>lo | (s1[i+3]<<1)<<hi
+	}
+	for ; i < len(a); i++ {
+		a[i] ^= s0[i]>>lo | (s1[i]<<1)<<hi
+	}
+}
+
+// mulSparse computes dense · sparse in F_2[X]/(X^n - 1), where sparse is
+// given by its set bit positions (each in [0, n)). The result is canonical.
+func mulSparse(dense []uint64, sparsePos []int, n int) []uint64 {
+	d := window(dense, n)
+	acc := make([]uint64, words(n))
+	mulWindowAcc(acc, d, sparsePos, n)
+	maskTop(acc, n)
 	return acc
 }
 
-// sampleUniform derives an nbits-bit uniform vector from seed.
+// mulSparse2 computes (a·sparse, b·sparse) in one fused pass over the
+// sparse positions (both windows stay hot in cache).
+func mulSparse2(a, b []uint64, sparsePos []int, n int) ([]uint64, []uint64) {
+	da, db := window(a, n), window(b, n)
+	ra, rb := make([]uint64, words(n)), make([]uint64, words(n))
+	nw := len(ra)
+	for _, p := range sparsePos {
+		o := n - p // 1..n
+		lo := uint(o) & 63
+		xorShifted(ra, da[o>>6:o>>6+nw+1], lo)
+		xorShifted(rb, db[o>>6:o>>6+nw+1], lo)
+	}
+	maskTop(ra, n)
+	maskTop(rb, n)
+	return ra, rb
+}
+
+// sampleUniform derives an nbits-bit uniform canonical vector from seed.
 func sampleUniform(seed []byte, nbits int) []uint64 {
 	nw := words(nbits)
 	buf := make([]byte, nw*8)
-	h := sha3.NewShake256()
-	h.Write(seed)
+	h := sha3.NewSHAKE256()
+	_, _ = h.Write(seed)
 	_, _ = h.Read(buf)
 	v := make([]uint64, nw)
 	for i := range v {
@@ -119,17 +155,18 @@ func sampleUniform(seed []byte, nbits int) []uint64 {
 	return v
 }
 
-// sampleFixedWeight derives an nbits-bit vector of Hamming weight w from
-// seed, choosing distinct positions by rejection sampling (no modulo bias).
+// sampleFixedWeight derives an nbits-bit canonical vector of Hamming weight
+// w from seed, choosing distinct positions by rejection sampling (no modulo
+// bias).
 func sampleFixedWeight(seed []byte, nbits, w int) []uint64 {
 	v := make([]uint64, words(nbits))
 	limit := (uint64(1) << 32) / uint64(nbits) * uint64(nbits)
-	h := sha3.NewShake256()
-	h.Write(seed)
-	buf := make([]byte, 4*64)
+	h := sha3.NewSHAKE256()
+	_, _ = h.Write(seed)
+	var buf [4 * 64]byte
 	count := 0
 	for count < w {
-		_, _ = h.Read(buf)
+		_, _ = h.Read(buf[:])
 		for off := 0; off+4 <= len(buf) && count < w; off += 4 {
 			x := uint64(binary.LittleEndian.Uint32(buf[off:]))
 			if x >= limit {
@@ -142,6 +179,8 @@ func sampleFixedWeight(seed []byte, nbits, w int) []uint64 {
 			}
 		}
 	}
+	clear(buf[:])
+	h.Reset()
 	return v
 }
 
@@ -149,10 +188,7 @@ func sampleFixedWeight(seed []byte, nbits, w int) []uint64 {
 func weight(v []uint64) int {
 	n := 0
 	for _, w := range v {
-		for w != 0 {
-			w &= w - 1
-			n++
-		}
+		n += bits.OnesCount64(w)
 	}
 	return n
 }
@@ -185,12 +221,8 @@ func bytesToBits(data []byte, nbits int) ([]uint64, error) {
 	for i := range v {
 		v[i] = binary.LittleEndian.Uint64(buf[i*8:])
 	}
-	check := append([]uint64{}, v...)
-	maskTop(check, nbits)
-	for i := range v {
-		if v[i] != check[i] {
-			return nil, errors.New("bit vector has non-zero padding")
-		}
+	if !isCanonical(v, nbits) {
+		return nil, errors.New("bit vector has non-zero padding")
 	}
 	return v, nil
 }

@@ -37,11 +37,18 @@ func TestValidateParams_Coverage(t *testing.T) {
 		t.Error("expected error for small SLSS.M")
 	}
 
-	// SLSS.Sigma < 3.0
+	// SLSS.Eta out of range
 	p = base
-	p.SLSS.Sigma = 2.0
+	p.SLSS.Eta = 2
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for small SLSS.Sigma")
+		t.Error("expected error for small SLSS.Eta")
+	}
+
+	// SLSS compression bits out of range
+	p = base
+	p.SLSS.DV = 2
+	if err := ValidateParams(p); err == nil {
+		t.Error("expected error for too few DV bits")
 	}
 
 	// code: non-prime ring length

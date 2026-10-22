@@ -51,17 +51,37 @@ func TestWOTS(t *testing.T) {
 	ps, _ := newParams(core.Hash128Params)
 	skSeed, _ := utils.SecureRandomBytes(ps.N)
 	pkSeed, _ := utils.SecureRandomBytes(ps.N)
+	w := getWorker(&ps, pkSeed, skSeed)
+	defer putWorker(w)
 	var a adrs
-	a.setType(adrsWOTSHash)
-	a.setKeyPair(5)
-	pk := ps.wotsPKGen(skSeed, pkSeed, &a)
+	a.setLayer(3)
+	a.setTree(77)
+	pk := make([]byte, ps.N)
+	chains := make([]byte, ps.wlen*ps.w*ps.N)
+	w.wotsPKGen(&ps, &a, 5, pk, chains)
 	msg, _ := utils.SecureRandomBytes(ps.N)
-	sig := ps.wotsSign(msg, skSeed, pkSeed, &a)
-	if !bytes.Equal(ps.wotsPKFromSig(sig, msg, pkSeed, &a), pk) {
+	sig := make([]byte, ps.wlen*ps.N)
+	ps.wotsSigFromChains(chains, msg, sig, make([]uint32, ps.wlen))
+	got := make([]byte, ps.N)
+	w.wotsPKFromSig(&ps, &a, 5, sig, msg, got)
+	if !bytes.Equal(got, pk) {
 		t.Fatal("WOTS+ pkFromSig mismatch")
 	}
+	// Agrees with the reference WOTS+ (FIPS 205 Algorithms 6 and 7).
+	rp, _ := refNewParams(core.Hash128Params)
+	var ra refAdrs
+	copy(ra[:], a[:])
+	ra.setType(adrsWOTSHash)
+	ra.setKeyPair(5)
+	if !bytes.Equal(rp.wotsPKGen(skSeed, pkSeed, &ra), pk) {
+		t.Fatal("WOTS+ public key differs from reference")
+	}
+	if !bytes.Equal(rp.wotsSign(msg, skSeed, pkSeed, &ra), sig) {
+		t.Fatal("WOTS+ signature differs from reference")
+	}
 	msg[0] ^= 1
-	if bytes.Equal(ps.wotsPKFromSig(sig, msg, pkSeed, &a), pk) {
+	w.wotsPKFromSig(&ps, &a, 5, sig, msg, got)
+	if bytes.Equal(got, pk) {
 		t.Fatal("WOTS+ accepted wrong message")
 	}
 }
@@ -70,15 +90,41 @@ func TestXMSS(t *testing.T) {
 	ps, _ := newParams(core.Hash128Params)
 	skSeed, _ := utils.SecureRandomBytes(ps.N)
 	pkSeed, _ := utils.SecureRandomBytes(ps.N)
+	w := getWorker(&ps, pkSeed, skSeed)
+	defer putWorker(w)
 	var a adrs
-	root := ps.xmssNode(skSeed, 0, uint32(ps.hp), pkSeed, &a)
-	msg, _ := utils.SecureRandomBytes(ps.N)
-	for idx := uint32(0); idx < 1<<uint(ps.hp); idx++ {
-		var b adrs
-		sig := ps.xmssSign(msg, skSeed, idx, pkSeed, &b)
-		var c adrs
-		if !bytes.Equal(ps.xmssPKFromSig(idx, sig, msg, pkSeed, &c), root) {
+	a.setLayer(1)
+	a.setTree(9)
+	n := ps.N
+	msg, _ := utils.SecureRandomBytes(n)
+	for idx := uint32(0); idx < uint32(ps.leaves); idx++ {
+		leaves := make([]byte, ps.leaves*n)
+		chains := make([]byte, ps.wlen*ps.w*n)
+		for i := 0; i < ps.leaves; i++ {
+			var st []byte
+			if uint32(i) == idx {
+				st = chains
+			}
+			w.wotsPKGen(&ps, &a, uint32(i), leaves[i*n:(i+1)*n], st)
+		}
+		sig := make([]byte, ps.xmssSigLen)
+		root := make([]byte, n)
+		w.xmssTree(&ps, &a, leaves, idx, sig[ps.wlen*n:], root)
+		ps.wotsSigFromChains(chains, msg, sig, make([]uint32, ps.wlen))
+		got := make([]byte, n)
+		w.xmssPKFromSig(&ps, &a, idx, sig, msg, got)
+		if !bytes.Equal(got, root) {
 			t.Fatalf("XMSS root mismatch for leaf %d", idx)
+		}
+		rp, _ := refNewParams(core.Hash128Params)
+		var ra refAdrs
+		copy(ra[:], a[:])
+		if !bytes.Equal(rp.xmssSign(msg, skSeed, idx, pkSeed, &ra), sig) {
+			t.Fatalf("XMSS signature differs from reference for leaf %d", idx)
+		}
+		copy(ra[:], a[:])
+		if !bytes.Equal(rp.xmssNode(skSeed, 0, uint32(ps.hp), pkSeed, &ra), root) {
+			t.Fatal("XMSS root differs from reference")
 		}
 	}
 }

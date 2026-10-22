@@ -1,24 +1,26 @@
 // Package latsig implements the lattice component of the kMOSAIC signature.
 //
-// The scheme is a Fiat-Shamir-with-aborts lattice signature: the construction
-// of CRYSTALS-Dilithium (FIPS 204, ML-DSA) instantiated over unstructured
-// matrices in Z_q rather than polynomial rings. The public key is
-// (ρ, T = A·S1 + S2 mod q) with A ∈ Z_q^{M×N} expanded from ρ and S1, S2 small;
-// a signature on message M is (c̃, z) with
+// The scheme is CRYSTALS-Dilithium (FIPS 204, ML-DSA) instantiated over
+// unstructured matrices in Z_q rather than polynomial rings. With A ∈ Z_q^{M×N}
+// expanded from ρ and S1, S2 small, T = A·S1 + S2 mod q is split by
+// Power2Round into (T1, T0); the public key is (ρ, T1) and the secret key
+// keeps T0. A signature on message M is (c̃, z, h) with
 //
+//	μ   = H(tr || M),             tr = H(pk)
 //	y   ← uniform in (-γ1, γ1]^N
-//	w1  = HighBits(A·y)
-//	c̃   = H(H(tr || M) || w1),   c = SampleInBall(c̃)
-//	z   = y + S1·c,               restart unless ||z||∞ < γ1 - β
-//	                              and ||LowBits(A·y - S2·c)||∞ < γ2 - β
+//	w   = A·y,  w1 = HighBits(w)
+//	c̃   = H(μ || w1),             c = SampleInBall(c̃)
+//	z   = y + S1·c,               restart unless ||z||∞ < γ1 - β,
+//	                              ||LowBits(w - S2·c)||∞ < γ2 - β and
+//	                              ||T0·c||∞ < γ2
+//	h   = MakeHint(-T0·c, w - S2·c + T0·c), restart if more than ω hints
 //
-// and verification recomputes w1 as HighBits(A·z - T·c) and checks c̃.
+// and verification recomputes w1 as UseHint(h, A·z - T1·c·2^d) and checks c̃.
 // Security reduces to unstructured LWE (key recovery) and SIS (forgery) with
 // the parameters of ML-DSA-65 / ML-DSA-87.
 package latsig
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -29,24 +31,22 @@ import (
 
 const (
 	// DomainKeyGen separates the key-generation seed expansion.
-	DomainKeyGen = "kmosaic-latsig-keygen-v3"
+	DomainKeyGen = "kmosaic-latsig-keygen-v4"
 
 	// SeedSize is the size of the public matrix seed ρ and the PRF key K.
 	SeedSize = 32
 	// TrSize is the size of tr = H(pk) and of μ = H(tr || M).
 	TrSize = 64
 
-	// MaxComponentSize bounds any length prefix read during deserialization.
+	// MaxComponentSize is retained for API compatibility. The v4 encodings
+	// have fixed sizes per level; the only length prefix (the level string)
+	// is bounded by 32 bytes.
 	MaxComponentSize = 64 * 1024 * 1024
 
-	// maxSignAttempts bounds the rejection-sampling loop. The acceptance rate
-	// is about 1/4 per attempt, so hitting this bound is a broken key or RNG.
+	// maxSignAttempts bounds the rejection-sampling loop. The expected number
+	// of attempts is about 5 (ML-DSA-65 shape) or 4 (ML-DSA-87 shape), so
+	// hitting this bound means a broken key or RNG.
 	maxSignAttempts = 1024
-
-	// zBytes is the packed size of one response coefficient (20 bits + γ1 offset).
-	zBytes = 3
-	// tBytes is the packed size of one public-key coefficient (23 bits).
-	tBytes = 3
 )
 
 // GenerateKeyPair generates a signature key pair for the given security level.
@@ -72,6 +72,15 @@ func GenerateKeyPair(level kmosaic.SecurityLevel) (result *kmosaic.LatticeSignKe
 	return GenerateKeyPairFromSeed(params, seed)
 }
 
+// checkParams requires a valid parameter set that matches a known level.
+func checkParams(p kmosaic.LatticeSignParams) error {
+	if err := core.ValidateLatticeSignParams(p); err != nil {
+		return err
+	}
+	_, err := core.LatticeLevelFromParams(p)
+	return err
+}
+
 // GenerateKeyPairFromSeed deterministically generates a signature key pair.
 func GenerateKeyPairFromSeed(params kmosaic.LatticeSignParams, seed []byte) (*kmosaic.LatticeSignKeyPair, error) {
 	if len(seed) < SeedSize {
@@ -80,86 +89,98 @@ func GenerateKeyPairFromSeed(params kmosaic.LatticeSignParams, seed []byte) (*km
 	if err := utils.ValidateSeedEntropy(seed); err != nil {
 		return nil, err
 	}
-	if err := core.ValidateLatticeSignParams(params); err != nil {
-		return nil, err
-	}
-	if _, err := core.LatticeLevelFromParams(params); err != nil {
+	if err := checkParams(params); err != nil {
 		return nil, err
 	}
 
-	n, m, l, q, eta := params.N, params.M, params.L, params.Q, params.Eta
+	n, m, l, eta := params.N, params.M, params.L, params.Eta
 
 	// (ρ, ρ', K) = H(seed || N || M || L)
-	expanded := utils.Shake256WithDomain(DomainKeyGen,
-		append(append(append(append([]byte{}, seed...), uint32LE(uint32(n))...), uint32LE(uint32(m))...), uint32LE(uint32(l))...),
-		SeedSize+TrSize+SeedSize)
+	input := make([]byte, 0, len(seed)+12)
+	input = append(input, seed...)
+	input = append(input, uint32LE(uint32(n))...)
+	input = append(input, uint32LE(uint32(m))...)
+	input = append(input, uint32LE(uint32(l))...)
+	expanded := utils.Shake256WithDomain(DomainKeyGen, input, SeedSize+TrSize+SeedSize)
+	utils.Zeroize(input)
+	defer utils.Zeroize(expanded)
 	rho := append([]byte{}, expanded[:SeedSize]...)
 	rhoPrime := expanded[SeedSize : SeedSize+TrSize]
 	K := append([]byte{}, expanded[SeedSize+TrSize:]...)
-	defer utils.Zeroize(expanded)
 
-	A := expandA(rho, m, n, q)
+	A := expandA(rho, m, n)
 	S1 := sampleEta(rhoPrime, 0, n*l, eta)
 	S2 := sampleEta(rhoPrime, 1, m*l, eta)
-	T := computeT(A, S1, S2, m, n, l, q)
+	T := computeT(A, S1, S2, m, n)
+	T1 := make([]int32, len(T))
+	T0 := make([]int32, len(T))
+	for i, t := range T {
+		T1[i], T0[i] = power2Round(t)
+	}
+	utils.ZeroizeInt32(T)
 
-	publicKey := kmosaic.LatticeSignPublicKey{Params: params, Rho: rho, T: T, A: A}
-	tr := shake(TrSize, SerializePublicKey(&publicKey))
+	publicKey := kmosaic.LatticeSignPublicKey{Params: params, Rho: rho, T1: T1, A: A}
+	publicKey.Tr = shake(TrSize, SerializePublicKey(&publicKey))
 
 	secretKey := kmosaic.LatticeSignSecretKey{
 		Params: params,
 		Rho:    append([]byte{}, rho...),
 		K:      K,
-		Tr:     tr,
+		Tr:     append([]byte{}, publicKey.Tr...),
 		S1:     S1,
 		S2:     S2,
+		T0:     T0,
 		A:      A,
 	}
 	return &kmosaic.LatticeSignKeyPair{PublicKey: publicKey, SecretKey: secretKey}, nil
 }
 
-// checkSecretKey validates the shape of a secret key.
+// checkSecretKey validates the parameters and shape of a secret key. Entry
+// ranges are checked by DeserializeSecretKey, not on every signature.
 func checkSecretKey(sk *kmosaic.LatticeSignSecretKey) error {
 	p := sk.Params
-	if err := core.ValidateLatticeSignParams(p); err != nil {
+	if err := checkParams(p); err != nil {
 		return err
 	}
 	if len(sk.Rho) != SeedSize || len(sk.K) != SeedSize || len(sk.Tr) != TrSize {
 		return errors.New("invalid secret key: wrong seed or hash length")
 	}
-	if len(sk.S1) != p.N*p.L || len(sk.S2) != p.M*p.L {
+	if len(sk.S1) != p.N*chalLen || len(sk.S2) != p.M*chalLen || len(sk.T0) != p.M*chalLen {
 		return errors.New("invalid secret key: wrong matrix dimensions")
-	}
-	for _, s := range sk.S1 {
-		if int(s) > p.Eta || int(s) < -p.Eta {
-			return errors.New("invalid secret key: S1 entry out of range")
-		}
-	}
-	for _, s := range sk.S2 {
-		if int(s) > p.Eta || int(s) < -p.Eta {
-			return errors.New("invalid secret key: S2 entry out of range")
-		}
 	}
 	return nil
 }
 
-// checkPublicKey validates the shape of a public key.
+// checkPublicKey validates the parameters and shape of a public key.
 func checkPublicKey(pk *kmosaic.LatticeSignPublicKey) error {
 	p := pk.Params
-	if err := core.ValidateLatticeSignParams(p); err != nil {
+	if err := checkParams(p); err != nil {
 		return err
 	}
 	if len(pk.Rho) != SeedSize {
 		return errors.New("invalid public key: wrong seed length")
 	}
-	if len(pk.T) != p.M*p.L {
-		return errors.New("invalid public key: wrong T dimensions")
+	if len(pk.T1) != p.M*chalLen {
+		return errors.New("invalid public key: wrong T1 dimensions")
 	}
 	return nil
 }
 
+// publicKeyHash returns pk.Tr when it is cached and SHAKE256(pk, 64) otherwise
+// (nil if pk cannot be serialized).
+func publicKeyHash(pk *kmosaic.LatticeSignPublicKey) []byte {
+	if len(pk.Tr) == TrSize {
+		return pk.Tr
+	}
+	enc := SerializePublicKey(pk)
+	if enc == nil {
+		return nil
+	}
+	return shake(TrSize, enc)
+}
+
 // Sign creates a signature on message with sk. pk, if non-nil, must be the
-// matching public key; it is checked against the hash stored in sk.
+// matching public key; its hash is compared with the one stored in sk.
 // Signing is hedged: fresh randomness is mixed into the mask derivation so
 // that a faulty RNG degrades to deterministic (still secure) signing.
 func Sign(sk *kmosaic.LatticeSignSecretKey, pk *kmosaic.LatticeSignPublicKey, message []byte) (result *kmosaic.LatticeSignature, err error) {
@@ -170,23 +191,23 @@ func Sign(sk *kmosaic.LatticeSignSecretKey, pk *kmosaic.LatticeSignPublicKey, me
 		}
 	}()
 
+	if sk == nil {
+		return nil, errors.New("nil secret key")
+	}
 	if err := checkSecretKey(sk); err != nil {
 		return nil, err
 	}
 	if pk != nil {
+		if pk.Params != sk.Params {
+			return nil, errors.New("public key does not match secret key")
+		}
 		if err := checkPublicKey(pk); err != nil {
 			return nil, err
 		}
-		if !utils.ConstantTimeEqual(sk.Tr, shake(TrSize, SerializePublicKey(pk))) {
+		tr := publicKeyHash(pk)
+		if tr == nil || !utils.ConstantTimeEqual(sk.Tr, tr) {
 			return nil, errors.New("public key does not match secret key")
 		}
-	}
-
-	p := sk.Params
-	n, m, l, q := p.N, p.M, p.L, p.Q
-	A := sk.A
-	if len(A) != m*n {
-		A = expandA(sk.Rho, m, n, q)
 	}
 
 	rnd, err := utils.SecureRandomBytes(SeedSize)
@@ -195,44 +216,172 @@ func Sign(sk *kmosaic.LatticeSignSecretKey, pk *kmosaic.LatticeSignPublicKey, me
 	}
 	defer utils.Zeroize(rnd)
 
+	sig, _, err := signInternal(sk, message, rnd, signLane)
+	return sig, err
+}
+
+// signScratch holds every per-signature buffer so that all of them, secret
+// or not, are zeroized on every exit path of Sign.
+type signScratch struct {
+	ys  []int32           // signLane masks, interleaved
+	w   [signLane][]int32 // A·y for each lane
+	w1  []int32           // HighBits(w) of the current attempt
+	w1p []byte            // packed w1
+	z   []int32           // y + S1·c
+	cs2 []int32           // S2·c
+	r   []int32           // w - S2·c mod q
+	ct0 []int32           // T0·c
+}
+
+func newSignScratch(n, m int) *signScratch {
+	s := &signScratch{
+		ys:  make([]int32, signLane*n),
+		w1:  make([]int32, m),
+		w1p: make([]byte, m*w1Bits/8),
+		z:   make([]int32, n),
+		cs2: make([]int32, m),
+		r:   make([]int32, m),
+		ct0: make([]int32, m),
+	}
+	for j := range s.w {
+		s.w[j] = make([]int32, m)
+	}
+	return s
+}
+
+func (s *signScratch) wipe() {
+	utils.ZeroizeInt32(s.ys)
+	for j := range s.w {
+		utils.ZeroizeInt32(s.w[j])
+	}
+	utils.ZeroizeInt32(s.w1)
+	utils.Zeroize(s.w1p)
+	utils.ZeroizeInt32(s.z)
+	utils.ZeroizeInt32(s.cs2)
+	utils.ZeroizeInt32(s.r)
+	utils.ZeroizeInt32(s.ct0)
+}
+
+// signInternal runs the rejection-sampling loop with hedging randomness rnd.
+// Masks are derived for attempts κ = 0, 1, 2, ... exactly as in sequential
+// signing; batch (1..signLane) of them are expanded per pass over A and the
+// attempts are then tried in κ order, so the first accepted attempt, and
+// hence the output, does not depend on batch. It also returns the number of
+// attempts consumed (for tests).
+func signInternal(sk *kmosaic.LatticeSignSecretKey, message, rnd []byte, batch int) (*kmosaic.LatticeSignature, int, error) {
+	p := sk.Params
+	n, m := p.N, p.M
+	A := sk.A
+	if len(A) != m*n {
+		A = expandA(sk.Rho, m, n)
+	}
+
 	mu := shake(TrSize, sk.Tr, message)
 	rhoPrime := shake(TrSize, sk.K, rnd, mu)
 	defer utils.Zeroize(rhoPrime)
 
-	zBound := int32(p.Gamma1 - p.Beta)
-	r0Bound := int32(p.Gamma2 - p.Beta)
+	s := newSignScratch(n, m)
+	defer s.wipe()
 
-	for kappa := 0; kappa < maxSignAttempts; kappa++ {
-		y := expandMask(rhoPrime, uint16(kappa), n, p.Gamma1)
-		w := matVec(A, y, m, n, q)
-		w1 := highBits(w, q, p.Gamma2)
-		ctilde := shake(p.CTildeSize, mu, packW1(w1))
-		c := sampleInBall(ctilde, p.Tau, l)
-
-		z := mulSmall(sk.S1, c, n, l)
-		for i := range z {
-			z[i] += y[i]
+	for base := 0; base < maxSignAttempts; base += batch {
+		for j := 0; j < batch; j++ {
+			expandMaskLane(rhoPrime, uint16(base+j), n, s.ys, j)
 		}
-		utils.ZeroizeInt32(y)
-		if infNorm(z) >= zBound {
-			utils.ZeroizeInt32(z)
-			continue
+		matVec4(A, s.ys, m, n, &s.w)
+		for j := 0; j < batch; j++ {
+			if sig := s.attempt(sk, mu, j); sig != nil {
+				return sig, base + j + 1, nil
+			}
 		}
-
-		s2c := mulSmall(sk.S2, c, m, l)
-		for i := range s2c {
-			s2c[i] = modQ(int64(w[i])-int64(s2c[i]), q)
-		}
-		r0 := lowBits(s2c, q, p.Gamma2)
-		utils.ZeroizeInt32(s2c)
-		if infNorm(r0) >= r0Bound {
-			utils.ZeroizeInt32(z)
-			continue
-		}
-
-		return &kmosaic.LatticeSignature{Challenge: ctilde, Z: z}, nil
 	}
-	return nil, errors.New("signing failed: rejection sampling did not terminate")
+	return nil, maxSignAttempts, errors.New("signing failed: rejection sampling did not terminate")
+}
+
+// attempt runs one signing attempt on lane j of the scratch space and
+// returns the signature, or nil if the attempt is rejected.
+func (s *signScratch) attempt(sk *kmosaic.LatticeSignSecretKey, mu []byte, j int) *kmosaic.LatticeSignature {
+	p := sk.Params
+	n, m := p.N, p.M
+	w := s.w[j]
+
+	for i, v := range w {
+		s.w1[i] = highBits(v)
+	}
+	packW1(s.w1, s.w1p)
+	ctilde := shake(p.CTildeSize, mu, s.w1p)
+	_, c := sampleInBall(ctilde, p.Tau)
+
+	// z = y + S1·c
+	mulSparse8(sk.S1, &c, n, s.z)
+	for k := range s.z {
+		s.z[k] += s.ys[signLane*k+j]
+	}
+	if normU(s.z) >= uint32(p.Gamma1-p.Beta) {
+		return nil
+	}
+
+	// r = w - S2·c; reject unless ||LowBits(r)||∞ < γ2 - β.
+	mulSparse8(sk.S2, &c, m, s.cs2)
+	var r0Norm uint32
+	for i, v := range w {
+		r := freeze(v - s.cs2[i])
+		s.r[i] = r
+		_, r0 := decompose(r)
+		a := absU(r0)
+		mask := -uint32((uint64(r0Norm) - uint64(a)) >> 63)
+		r0Norm = (r0Norm &^ mask) | (a & mask)
+	}
+	if r0Norm >= uint32(p.Gamma2-p.Beta) {
+		return nil
+	}
+
+	// T0·c must be below γ2 so that the hints recover HighBits(w).
+	mulSparse32(sk.T0, &c, m, s.ct0)
+	if normU(s.ct0) >= uint32(p.Gamma2) {
+		return nil
+	}
+
+	// h = MakeHint(-T0·c, w - S2·c + T0·c): h_i = 1 iff
+	// HighBits(r_i + ct0_i) != HighBits(r_i).
+	var count int32
+	for i, r := range s.r {
+		count += makeHint(-s.ct0[i], freeze(r+s.ct0[i]))
+	}
+	if int(count) > p.Omega {
+		return nil
+	}
+	hint := make([]uint16, 0, count)
+	for i, r := range s.r {
+		if makeHint(-s.ct0[i], freeze(r+s.ct0[i])) != 0 {
+			hint = append(hint, uint16(i))
+		}
+	}
+	return &kmosaic.LatticeSignature{Challenge: ctilde, Z: append([]int32{}, s.z...), Hint: hint}
+}
+
+// recoverW1 computes UseHint(h, A·z - T1·c·2^d) for a well-formed signature
+// on a well-formed public key.
+func recoverW1(pk *kmosaic.LatticeSignPublicKey, sig *kmosaic.LatticeSignature, c *challenge) []int32 {
+	p := pk.Params
+	n, m := p.N, p.M
+	A := pk.A
+	if len(A) != m*n {
+		A = expandA(pk.Rho, m, n)
+	}
+	ct1 := make([]int32, m)
+	mulSparse32(pk.T1, c, m, ct1)
+	w := make([]int32, m)
+	matVec(A, sig.Z, ct1, m, n, w)
+	hi := 0
+	for i, v := range w {
+		var h int32
+		if hi < len(sig.Hint) && int(sig.Hint[hi]) == i {
+			h = 1
+			hi++
+		}
+		w[i] = useHint(h, v)
+	}
+	return w
 }
 
 // Verify reports whether sig is a valid signature on message under pk.
@@ -250,254 +399,23 @@ func Verify(pk *kmosaic.LatticeSignPublicKey, message []byte, sig *kmosaic.Latti
 		return false
 	}
 	p := pk.Params
-	n, m, l, q := p.N, p.M, p.L, p.Q
-
-	if len(sig.Challenge) != p.CTildeSize || len(sig.Z) != n {
+	if len(sig.Challenge) != p.CTildeSize || len(sig.Z) != p.N || !checkHints(sig.Hint, p) {
 		return false
 	}
-	if infNorm(sig.Z) >= int32(p.Gamma1-p.Beta) {
+	if normU(sig.Z) >= uint32(p.Gamma1-p.Beta) {
 		return false
 	}
 
-	A := pk.A
-	if len(A) != m*n {
-		A = expandA(pk.Rho, m, n, q)
+	tr := publicKeyHash(pk)
+	if tr == nil {
+		return false
 	}
-
-	tr := shake(TrSize, SerializePublicKey(pk))
 	mu := shake(TrSize, tr, message)
-	c := sampleInBall(sig.Challenge, p.Tau, l)
+	_, c := sampleInBall(sig.Challenge, p.Tau)
 
-	// w' = A·z - T·c = A·y - S2·c, whose HighBits equal HighBits(A·y) by construction.
-	w := matVec(A, sig.Z, m, n, q)
-	tc := mulT(pk.T, c, m, l, q)
-	for i := range w {
-		w[i] = modQ(int64(w[i])-int64(tc[i]), q)
-	}
-	w1 := highBits(w, q, p.Gamma2)
-	expected := shake(p.CTildeSize, mu, packW1(w1))
-
+	w1 := recoverW1(pk, sig, &c)
+	w1p := make([]byte, p.M*w1Bits/8)
+	packW1(w1, w1p)
+	expected := shake(p.CTildeSize, mu, w1p)
 	return utils.ConstantTimeEqual(sig.Challenge, expected)
-}
-
-// -----------------------------------------------------------------------------
-// Serialization
-// -----------------------------------------------------------------------------
-
-func levelBytes(params kmosaic.LatticeSignParams) []byte {
-	level, err := core.LatticeLevelFromParams(params)
-	if err != nil {
-		return nil
-	}
-	return []byte(level)
-}
-
-func put3(buf []byte, v uint32) {
-	buf[0] = byte(v)
-	buf[1] = byte(v >> 8)
-	buf[2] = byte(v >> 16)
-}
-
-func get3(buf []byte) uint32 {
-	return uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16
-}
-
-// SerializePublicKey serializes a signature public key as
-// [level_len:4][level][rho:32][t_count:4][T entries, 3 bytes each].
-func SerializePublicKey(pk *kmosaic.LatticeSignPublicKey) []byte {
-	lvl := levelBytes(pk.Params)
-	result := make([]byte, 0, 4+len(lvl)+SeedSize+4+tBytes*len(pk.T))
-	result = append(result, uint32LE(uint32(len(lvl)))...)
-	result = append(result, lvl...)
-	result = append(result, pk.Rho...)
-	result = append(result, uint32LE(uint32(len(pk.T)))...)
-	buf := make([]byte, tBytes)
-	for _, v := range pk.T {
-		put3(buf, uint32(v))
-		result = append(result, buf...)
-	}
-	return result
-}
-
-// DeserializePublicKey parses a public key written by SerializePublicKey and
-// expands the matrix A.
-func DeserializePublicKey(data []byte) (*kmosaic.LatticeSignPublicKey, error) {
-	off := 0
-	if off+4 > len(data) {
-		return nil, errors.New("invalid public key data: too short")
-	}
-	lvlLen := int(binary.LittleEndian.Uint32(data[off:]))
-	off += 4
-	if lvlLen > MaxComponentSize || off+lvlLen > len(data) {
-		return nil, errors.New("invalid public key: security level truncated")
-	}
-	params, err := core.GetLatticeSignParams(kmosaic.SecurityLevel(data[off : off+lvlLen]))
-	if err != nil {
-		return nil, err
-	}
-	off += lvlLen
-
-	if off+SeedSize+4 > len(data) {
-		return nil, errors.New("invalid public key: truncated")
-	}
-	rho := append([]byte{}, data[off:off+SeedSize]...)
-	off += SeedSize
-	tCount := int(binary.LittleEndian.Uint32(data[off:]))
-	off += 4
-	if tCount != params.M*params.L {
-		return nil, errors.New("invalid public key: T dimension mismatch with params")
-	}
-	if len(data) != off+tBytes*tCount {
-		return nil, errors.New("invalid public key: wrong length")
-	}
-	T := make([]int32, tCount)
-	for i := 0; i < tCount; i++ {
-		v := get3(data[off+tBytes*i:])
-		if int(v) >= params.Q {
-			return nil, errors.New("invalid public key: T entry out of range")
-		}
-		T[i] = int32(v)
-	}
-
-	pk := &kmosaic.LatticeSignPublicKey{Params: params, Rho: rho, T: T}
-	pk.A = expandA(rho, params.M, params.N, params.Q)
-	return pk, nil
-}
-
-// SerializeSecretKey serializes a signature secret key as
-// [level_len:4][level][rho:32][K:32][tr:64][s1_count:4][S1 bytes][s2_count:4][S2 bytes].
-func SerializeSecretKey(sk *kmosaic.LatticeSignSecretKey) []byte {
-	lvl := levelBytes(sk.Params)
-	result := make([]byte, 0, 4+len(lvl)+SeedSize+SeedSize+TrSize+8+len(sk.S1)+len(sk.S2))
-	result = append(result, uint32LE(uint32(len(lvl)))...)
-	result = append(result, lvl...)
-	result = append(result, sk.Rho...)
-	result = append(result, sk.K...)
-	result = append(result, sk.Tr...)
-	result = append(result, uint32LE(uint32(len(sk.S1)))...)
-	for _, s := range sk.S1 {
-		result = append(result, byte(s))
-	}
-	result = append(result, uint32LE(uint32(len(sk.S2)))...)
-	for _, s := range sk.S2 {
-		result = append(result, byte(s))
-	}
-	return result
-}
-
-// DeserializeSecretKey parses a secret key written by SerializeSecretKey.
-func DeserializeSecretKey(data []byte) (*kmosaic.LatticeSignSecretKey, error) {
-	off := 0
-	if off+4 > len(data) {
-		return nil, errors.New("invalid secret key data: too short")
-	}
-	lvlLen := int(binary.LittleEndian.Uint32(data[off:]))
-	off += 4
-	if lvlLen > MaxComponentSize || off+lvlLen > len(data) {
-		return nil, errors.New("invalid secret key: security level truncated")
-	}
-	params, err := core.GetLatticeSignParams(kmosaic.SecurityLevel(data[off : off+lvlLen]))
-	if err != nil {
-		return nil, err
-	}
-	off += lvlLen
-
-	if off+SeedSize+SeedSize+TrSize+4 > len(data) {
-		return nil, errors.New("invalid secret key: truncated")
-	}
-	sk := &kmosaic.LatticeSignSecretKey{Params: params}
-	sk.Rho = append([]byte{}, data[off:off+SeedSize]...)
-	off += SeedSize
-	sk.K = append([]byte{}, data[off:off+SeedSize]...)
-	off += SeedSize
-	sk.Tr = append([]byte{}, data[off:off+TrSize]...)
-	off += TrSize
-
-	readSmall := func(expected int) ([]int8, error) {
-		if off+4 > len(data) {
-			return nil, errors.New("invalid secret key: missing matrix length")
-		}
-		count := int(binary.LittleEndian.Uint32(data[off:]))
-		off += 4
-		if count != expected {
-			return nil, errors.New("invalid secret key: matrix dimension mismatch with params")
-		}
-		if off+count > len(data) {
-			return nil, errors.New("invalid secret key: matrix truncated")
-		}
-		out := make([]int8, count)
-		for i := 0; i < count; i++ {
-			v := int8(data[off+i])
-			if int(v) > params.Eta || int(v) < -params.Eta {
-				return nil, errors.New("invalid secret key: entry out of range")
-			}
-			out[i] = v
-		}
-		off += count
-		return out, nil
-	}
-	if sk.S1, err = readSmall(params.N * params.L); err != nil {
-		return nil, err
-	}
-	if sk.S2, err = readSmall(params.M * params.L); err != nil {
-		return nil, err
-	}
-	if off != len(data) {
-		return nil, errors.New("invalid secret key: trailing data")
-	}
-	sk.A = expandA(sk.Rho, params.M, params.N, params.Q)
-	return sk, nil
-}
-
-// SerializeSignature serializes a signature as
-// [ctilde_len:4][ctilde][z_count:4][z entries + gamma1, 3 bytes each].
-func SerializeSignature(sig *kmosaic.LatticeSignature) []byte {
-	result := make([]byte, 0, 8+len(sig.Challenge)+zBytes*len(sig.Z))
-	result = append(result, uint32LE(uint32(len(sig.Challenge)))...)
-	result = append(result, sig.Challenge...)
-	result = append(result, uint32LE(uint32(len(sig.Z)))...)
-	buf := make([]byte, zBytes)
-	gamma1 := int32(1 << 19)
-	for _, z := range sig.Z {
-		put3(buf, uint32(z+gamma1))
-		result = append(result, buf...)
-	}
-	return result
-}
-
-// DeserializeSignature parses a signature written by SerializeSignature.
-// Range checks on z are performed by Verify.
-func DeserializeSignature(data []byte) (*kmosaic.LatticeSignature, error) {
-	off := 0
-	if off+4 > len(data) {
-		return nil, errors.New("invalid signature data: too short")
-	}
-	cLen := int(binary.LittleEndian.Uint32(data[off:]))
-	off += 4
-	if cLen < 32 || cLen > 64 {
-		return nil, errors.New("invalid signature: challenge length out of range")
-	}
-	if off+cLen > len(data) {
-		return nil, errors.New("invalid signature: challenge truncated")
-	}
-	sig := &kmosaic.LatticeSignature{Challenge: append([]byte{}, data[off:off+cLen]...)}
-	off += cLen
-
-	if off+4 > len(data) {
-		return nil, errors.New("invalid signature: missing response length")
-	}
-	zCount := int(binary.LittleEndian.Uint32(data[off:]))
-	off += 4
-	if zCount > utils.MaxVectorLength {
-		return nil, errors.New("invalid signature: response length exceeds limit")
-	}
-	if len(data) != off+zBytes*zCount {
-		return nil, errors.New("invalid signature: wrong length")
-	}
-	gamma1 := int32(1 << 19)
-	sig.Z = make([]int32, zCount)
-	for i := 0; i < zCount; i++ {
-		sig.Z[i] = int32(get3(data[off+zBytes*i:])) - gamma1
-	}
-	return sig, nil
 }

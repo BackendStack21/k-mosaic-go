@@ -7,23 +7,27 @@
 //   - uov:    Unbalanced Oil and Vinegar over F_256 (multivariate quadratic),
 //   - slhdsa: SLH-DSA / SPHINCS+ with SHAKE256 (hash-function assumptions only).
 //
-// Signing hashes the message together with the composite public key into a
-// 64-byte digest μ and signs μ with every component. A composite signature is
-// valid only if all three component signatures are valid, so forging one
-// requires breaking all three problems ("AND" combiner). The binding of the
-// component public keys and the inclusion of the public-key hash in μ prevent
-// mixing components across key pairs.
+// Signing draws a fresh 32-byte nonce, hashes it with the composite public
+// key hash and the message into a 64-byte digest μ, and signs μ with every
+// component. A composite signature is valid only if all three component
+// signatures are valid, so forging one requires breaking all three problems.
+// The nonce ties the three components to one signature: components taken
+// from two different signatures on the same message never share a digest,
+// so they cannot be recombined (strong unforgeability of the composite then
+// follows from the unforgeability of the components).
+//
+// Every serialized object starts with the self-describing header of
+// internal/wire, so deserialization needs no parameters.
 package sign
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"sync"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
 	"github.com/BackendStack21/k-mosaic-go/core"
 	"github.com/BackendStack21/k-mosaic-go/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/internal/wire"
 	"github.com/BackendStack21/k-mosaic-go/problems/latsig"
 	"github.com/BackendStack21/k-mosaic-go/problems/slhdsa"
 	"github.com/BackendStack21/k-mosaic-go/problems/uov"
@@ -31,15 +35,19 @@ import (
 )
 
 const (
-	DomainLattice = "kmosaic-sign-lattice-v3"
-	DomainMQ      = "kmosaic-sign-mq-v3"
-	DomainHash    = "kmosaic-sign-hash-v3"
-	DomainMessage = "kmosaic-sign-msg-v3"
+	DomainLattice = "kmosaic-sign-lattice-v4"
+	DomainMQ      = "kmosaic-sign-mq-v4"
+	DomainHash    = "kmosaic-sign-hash-v4"
+	DomainMessage = "kmosaic-sign-msg-v4"
 
+	// SeedSize is the exact size of a key-generation seed.
+	SeedSize = 32
+	// NonceSize is the size of the per-signature nonce.
+	NonceSize = 32
 	// PublicKeyHashSize is the size of the composite public key hash.
 	PublicKeyHashSize = 64
 	// MaxComponentSize bounds any length prefix read during deserialization.
-	MaxComponentSize = 64 * 1024 * 1024
+	MaxComponentSize = 16 * 1024 * 1024
 )
 
 // GenerateKeyPair generates a composite signature key pair.
@@ -55,7 +63,7 @@ func GenerateKeyPair(level kmosaic.SecurityLevel) (result *kmosaic.MOSAICSignKey
 	if err != nil {
 		return nil, err
 	}
-	seed, err := utils.SecureRandomBytes(32)
+	seed, err := utils.SecureRandomBytes(SeedSize)
 	if err != nil {
 		return nil, err
 	}
@@ -63,19 +71,17 @@ func GenerateKeyPair(level kmosaic.SecurityLevel) (result *kmosaic.MOSAICSignKey
 	return GenerateKeyPairFromSeed(params, seed)
 }
 
-// GenerateKeyPairFromSeed deterministically generates a composite key pair.
+// GenerateKeyPairFromSeed deterministically generates a composite key pair
+// from a 32-byte seed.
 func GenerateKeyPairFromSeed(params kmosaic.SignParams, seed []byte) (*kmosaic.MOSAICSignKeyPair, error) {
-	if len(seed) < 32 {
-		return nil, errors.New("seed must be at least 32 bytes")
-	}
-	if err := utils.ValidateSeedEntropy(seed); err != nil {
-		return nil, err
+	if len(seed) != SeedSize {
+		return nil, fmt.Errorf("%w: seed must be exactly %d bytes", kmosaic.ErrInvalidKey, SeedSize)
 	}
 	if err := core.ValidateSignParams(params); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
 	}
-	if _, err := core.GetSignParams(params.Level); err != nil {
-		return nil, err
+	if known, err := core.GetSignParams(params.Level); err != nil || known != params {
+		return nil, fmt.Errorf("%w: parameters do not match level %q", kmosaic.ErrInvalidParams, params.Level)
 	}
 
 	latSeed := utils.HashWithDomain(DomainLattice, seed)
@@ -112,36 +118,45 @@ func GenerateKeyPairFromSeed(params kmosaic.SignParams, seed []byte) (*kmosaic.M
 		}
 	}
 
-	binding := entanglement.ComputeBinding(
-		latsig.SerializePublicKey(&latKP.PublicKey),
-		uov.SerializePublicKey(&mqKP.PublicKey),
-		slhdsa.SerializePublicKey(&hashKP.PublicKey),
-	)
 	publicKey := kmosaic.MOSAICSignPublicKey{
 		Params:  params,
 		Lattice: latKP.PublicKey,
 		MQ:      mqKP.PublicKey,
 		Hash:    hashKP.PublicKey,
-		Binding: binding,
 	}
+	publicKey.Binding = entanglement.ComputeBinding(
+		latsig.SerializePublicKey(&publicKey.Lattice),
+		uov.SerializePublicKey(&publicKey.MQ),
+		slhdsa.SerializePublicKey(&publicKey.Hash),
+	)
+	publicKey.KeyHash = utils.Shake256(SerializePublicKey(&publicKey), PublicKeyHashSize)
+
 	secretKey := kmosaic.MOSAICSignSecretKey{
 		Params:        params,
 		Lattice:       latKP.SecretKey,
 		MQ:            mqKP.SecretKey,
 		Hash:          hashKP.SecretKey,
 		Seed:          append([]byte{}, seed...),
-		PublicKeyHash: publicKeyHash(&publicKey),
+		PublicKeyHash: append([]byte{}, publicKey.KeyHash...),
 	}
 	return &kmosaic.MOSAICSignKeyPair{PublicKey: publicKey, SecretKey: secretKey}, nil
 }
 
-func publicKeyHash(pk *kmosaic.MOSAICSignPublicKey) []byte {
+// PublicKeyHash returns the cached hash of pk, computing it if necessary.
+func PublicKeyHash(pk *kmosaic.MOSAICSignPublicKey) []byte {
+	if len(pk.KeyHash) == PublicKeyHashSize {
+		return pk.KeyHash
+	}
 	return utils.Shake256(SerializePublicKey(pk), PublicKeyHashSize)
 }
 
-// messageDigest binds the message to the composite public key.
-func messageDigest(pkHash, message []byte) []byte {
-	return utils.Shake256WithDomain(DomainMessage, append(append([]byte{}, pkHash...), message...), PublicKeyHashSize)
+// messageDigest binds the message to the composite public key and the nonce.
+func messageDigest(pkHash, nonce, message []byte) []byte {
+	in := make([]byte, 0, len(pkHash)+len(nonce)+len(message))
+	in = append(in, pkHash...)
+	in = append(in, nonce...)
+	in = append(in, message...)
+	return utils.Shake256WithDomain(DomainMessage, in, PublicKeyHashSize)
 }
 
 // Sign creates a composite signature on message. pk, if non-nil, must match sk.
@@ -153,16 +168,23 @@ func Sign(sk *kmosaic.MOSAICSignSecretKey, pk *kmosaic.MOSAICSignPublicKey, mess
 		}
 	}()
 
+	if sk == nil {
+		return nil, fmt.Errorf("%w: nil secret key", kmosaic.ErrInvalidKey)
+	}
 	if err := core.ValidateSignParams(sk.Params); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
 	}
 	if len(sk.PublicKeyHash) != PublicKeyHashSize {
-		return nil, errors.New("invalid secret key: missing public key hash")
+		return nil, fmt.Errorf("%w: missing public key hash", kmosaic.ErrInvalidKey)
 	}
-	if pk != nil && !utils.ConstantTimeEqual(sk.PublicKeyHash, publicKeyHash(pk)) {
-		return nil, errors.New("public key does not match secret key")
+	if pk != nil && !utils.ConstantTimeEqual(sk.PublicKeyHash, PublicKeyHash(pk)) {
+		return nil, kmosaic.ErrKeyMismatch
 	}
-	mu := messageDigest(sk.PublicKeyHash, message)
+	nonce, err := utils.SecureRandomBytes(NonceSize)
+	if err != nil {
+		return nil, err
+	}
+	mu := messageDigest(sk.PublicKeyHash, nonce, message)
 
 	var wg sync.WaitGroup
 	var latSig *kmosaic.LatticeSignature
@@ -188,7 +210,7 @@ func Sign(sk *kmosaic.MOSAICSignSecretKey, pk *kmosaic.MOSAICSignPublicKey, mess
 			return nil, err
 		}
 	}
-	return &kmosaic.MOSAICSignature{Lattice: *latSig, MQ: *mqSig, Hash: *hashSig}, nil
+	return &kmosaic.MOSAICSignature{Nonce: nonce, Lattice: *latSig, MQ: *mqSig, Hash: *hashSig}, nil
 }
 
 // Verify reports whether sig is a valid composite signature on message
@@ -199,13 +221,13 @@ func Verify(pk *kmosaic.MOSAICSignPublicKey, message []byte, sig *kmosaic.MOSAIC
 			isValid = false
 		}
 	}()
-	if pk == nil || sig == nil {
+	if pk == nil || sig == nil || len(sig.Nonce) != NonceSize {
 		return false
 	}
 	if err := core.ValidateSignParams(pk.Params); err != nil {
 		return false
 	}
-	mu := messageDigest(publicKeyHash(pk), message)
+	mu := messageDigest(PublicKeyHash(pk), sig.Nonce, message)
 
 	var wg sync.WaitGroup
 	var okLat, okMQ, okHash bool
@@ -230,139 +252,151 @@ func Verify(pk *kmosaic.MOSAICSignPublicKey, message []byte, sig *kmosaic.MOSAIC
 // Serialization
 // -----------------------------------------------------------------------------
 
-func appendLV(dst []byte, v []byte) []byte {
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(v)))
-	dst = append(dst, lenBuf...)
-	return append(dst, v...)
-}
-
-func readLV(data []byte, offset int, what string) ([]byte, int, error) {
-	if offset+4 > len(data) {
-		return nil, offset, fmt.Errorf("invalid %s: missing length", what)
-	}
-	n := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if n > MaxComponentSize || offset+n > len(data) {
-		return nil, offset, fmt.Errorf("invalid %s: truncated", what)
-	}
-	return data[offset : offset+n], offset + n, nil
-}
-
-// SerializePublicKey serializes a composite public key.
-// Format: [level_len:4][level][lat_len:4][lat][mq_len:4][mq][hash_len:4][hash][binding:32]
+// SerializePublicKey serializes a composite public key:
+// header || [lat_len:4][lat] || [mq_len:4][mq] || [hash_len:4][hash] || binding:32.
 func SerializePublicKey(pk *kmosaic.MOSAICSignPublicKey) []byte {
-	var result []byte
-	result = appendLV(result, []byte(pk.Params.Level))
-	result = appendLV(result, latsig.SerializePublicKey(&pk.Lattice))
-	result = appendLV(result, uov.SerializePublicKey(&pk.MQ))
-	result = appendLV(result, slhdsa.SerializePublicKey(&pk.Hash))
-	return append(result, pk.Binding...)
+	hdr, err := wire.Header(wire.TypeSignPublicKey, pk.Params.Level)
+	if err != nil {
+		return nil
+	}
+	out := hdr
+	out = wire.AppendLV(out, latsig.SerializePublicKey(&pk.Lattice))
+	out = wire.AppendLV(out, uov.SerializePublicKey(&pk.MQ))
+	out = wire.AppendLV(out, slhdsa.SerializePublicKey(&pk.Hash))
+	return append(out, pk.Binding...)
 }
 
-// DeserializePublicKey parses a composite public key and validates its binding.
+// DeserializePublicKey parses a composite public key, validates its binding
+// and caches its hash.
 func DeserializePublicKey(data []byte) (*kmosaic.MOSAICSignPublicKey, error) {
-	levelBytes, offset, err := readLV(data, 0, "public key level")
+	level, body, err := wire.ParseHeader(data, wire.TypeSignPublicKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
 	}
-	params, err := core.GetSignParams(kmosaic.SecurityLevel(levelBytes))
+	params, _ := core.GetSignParams(level)
+	r := wire.NewReader(body)
+	latBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, fmt.Errorf("invalid public key: unknown security level %q", string(levelBytes))
+		return nil, fmt.Errorf("%w: lattice component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	latBytes, offset, err := readLV(data, offset, "public key lattice component")
+	mqBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: MQ component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	mqBytes, offset, err := readLV(data, offset, "public key MQ component")
+	hashBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: hash component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	hashBytes, offset, err := readLV(data, offset, "public key hash component")
-	if err != nil {
-		return nil, err
+	binding, err := r.Fixed(32)
+	if err != nil || r.Done() != nil {
+		return nil, fmt.Errorf("%w: binding has wrong length", kmosaic.ErrInvalidKey)
 	}
-	if len(data) != offset+32 {
-		return nil, errors.New("invalid public key: binding has wrong length")
-	}
-	binding := append([]byte{}, data[offset:]...)
 	if !utils.ConstantTimeEqual(binding, entanglement.ComputeBinding(latBytes, mqBytes, hashBytes)) {
-		return nil, errors.New("invalid public key: binding mismatch")
+		return nil, fmt.Errorf("%w: binding mismatch", kmosaic.ErrInvalidKey)
 	}
 
-	latPK, err := latsig.DeserializePublicKey(latBytes)
-	if err != nil {
-		return nil, err
+	var wg sync.WaitGroup
+	var latPK *kmosaic.LatticeSignPublicKey
+	var mqPK *kmosaic.MQPublicKey
+	var hashPK *kmosaic.HashSignPublicKey
+	var errLat, errMQ, errHash error
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		latPK, errLat = latsig.DeserializePublicKey(latBytes)
+	}()
+	go func() {
+		defer wg.Done()
+		mqPK, errMQ = uov.DeserializePublicKey(mqBytes, params.MQ)
+	}()
+	go func() {
+		defer wg.Done()
+		hashPK, errHash = slhdsa.DeserializePublicKey(hashBytes, params.Hash)
+	}()
+	wg.Wait()
+	for _, err := range []error{errLat, errMQ, errHash} {
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
+		}
 	}
 	if latPK.Params != params.Lattice {
-		return nil, errors.New("invalid public key: lattice component level mismatch")
+		return nil, fmt.Errorf("%w: lattice component level mismatch", kmosaic.ErrInvalidKey)
 	}
-	mqPK, err := uov.DeserializePublicKey(mqBytes, params.MQ)
-	if err != nil {
-		return nil, err
-	}
-	hashPK, err := slhdsa.DeserializePublicKey(hashBytes, params.Hash)
-	if err != nil {
-		return nil, err
-	}
-	return &kmosaic.MOSAICSignPublicKey{Params: params, Lattice: *latPK, MQ: *mqPK, Hash: *hashPK, Binding: binding}, nil
+	pk := &kmosaic.MOSAICSignPublicKey{Params: params, Lattice: *latPK, MQ: *mqPK, Hash: *hashPK, Binding: append([]byte{}, binding...)}
+	pk.KeyHash = utils.Shake256(data, PublicKeyHashSize)
+	return pk, nil
 }
 
-// SerializeSecretKey serializes a composite secret key.
-// Format: [level_len:4][level][lat_len:4][lat][mq_len:4][mq][hash_len:4][hash][seed_len:4][seed][pkhash:64]
+// SerializeSecretKey serializes a composite secret key:
+// header || [lat_len:4][lat] || [mq_len:4][mq] || [hash_len:4][hash] || seed:32 || pkhash:64.
 func SerializeSecretKey(sk *kmosaic.MOSAICSignSecretKey) []byte {
-	var result []byte
-	result = appendLV(result, []byte(sk.Params.Level))
-	result = appendLV(result, latsig.SerializeSecretKey(&sk.Lattice))
-	result = appendLV(result, uov.SerializeSecretKey(&sk.MQ))
-	result = appendLV(result, slhdsa.SerializeSecretKey(&sk.Hash))
-	result = appendLV(result, sk.Seed)
-	return append(result, sk.PublicKeyHash...)
+	hdr, err := wire.Header(wire.TypeSignSecretKey, sk.Params.Level)
+	if err != nil {
+		return nil
+	}
+	out := hdr
+	out = wire.AppendLV(out, latsig.SerializeSecretKey(&sk.Lattice))
+	out = wire.AppendLV(out, uov.SerializeSecretKey(&sk.MQ))
+	out = wire.AppendLV(out, slhdsa.SerializeSecretKey(&sk.Hash))
+	out = append(out, sk.Seed...)
+	return append(out, sk.PublicKeyHash...)
 }
 
 // DeserializeSecretKey parses a composite secret key.
 func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
-	levelBytes, offset, err := readLV(data, 0, "secret key level")
+	level, body, err := wire.ParseHeader(data, wire.TypeSignSecretKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
 	}
-	params, err := core.GetSignParams(kmosaic.SecurityLevel(levelBytes))
+	params, _ := core.GetSignParams(level)
+	r := wire.NewReader(body)
+	latBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, fmt.Errorf("invalid secret key: unknown security level %q", string(levelBytes))
+		return nil, fmt.Errorf("%w: lattice component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	latBytes, offset, err := readLV(data, offset, "secret key lattice component")
+	mqBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: MQ component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	mqBytes, offset, err := readLV(data, offset, "secret key MQ component")
+	hashBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: hash component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	hashBytes, offset, err := readLV(data, offset, "secret key hash component")
+	seed, err := r.Fixed(SeedSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: seed truncated", kmosaic.ErrInvalidKey)
 	}
-	seed, offset, err := readLV(data, offset, "secret key seed")
-	if err != nil {
-		return nil, err
+	pkHash, err := r.Fixed(PublicKeyHashSize)
+	if err != nil || r.Done() != nil {
+		return nil, fmt.Errorf("%w: public key hash has wrong length", kmosaic.ErrInvalidKey)
 	}
-	if len(data) != offset+PublicKeyHashSize {
-		return nil, errors.New("invalid secret key: public key hash has wrong length")
-	}
-	latSK, err := latsig.DeserializeSecretKey(latBytes)
-	if err != nil {
-		return nil, err
+
+	var wg sync.WaitGroup
+	var latSK *kmosaic.LatticeSignSecretKey
+	var mqSK *kmosaic.MQSecretKey
+	var hashSK *kmosaic.HashSignSecretKey
+	var errLat, errMQ, errHash error
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		latSK, errLat = latsig.DeserializeSecretKey(latBytes)
+	}()
+	go func() {
+		defer wg.Done()
+		mqSK, errMQ = uov.DeserializeSecretKey(mqBytes, params.MQ)
+	}()
+	go func() {
+		defer wg.Done()
+		hashSK, errHash = slhdsa.DeserializeSecretKey(hashBytes, params.Hash)
+	}()
+	wg.Wait()
+	for _, err := range []error{errLat, errMQ, errHash} {
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
+		}
 	}
 	if latSK.Params != params.Lattice {
-		return nil, errors.New("invalid secret key: lattice component level mismatch")
-	}
-	mqSK, err := uov.DeserializeSecretKey(mqBytes, params.MQ)
-	if err != nil {
-		return nil, err
-	}
-	hashSK, err := slhdsa.DeserializeSecretKey(hashBytes, params.Hash)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: lattice component level mismatch", kmosaic.ErrInvalidKey)
 	}
 	return &kmosaic.MOSAICSignSecretKey{
 		Params:        params,
@@ -370,47 +404,63 @@ func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSignSecretKey, error) {
 		MQ:            *mqSK,
 		Hash:          *hashSK,
 		Seed:          append([]byte{}, seed...),
-		PublicKeyHash: append([]byte{}, data[offset:]...),
+		PublicKeyHash: append([]byte{}, pkHash...),
 	}, nil
 }
 
-// SerializeSignature serializes a composite signature.
-// Format: [lat_len:4][lat][mq_len:4][mq][hash_len:4][hash]
-func SerializeSignature(sig *kmosaic.MOSAICSignature) []byte {
-	var result []byte
-	result = appendLV(result, latsig.SerializeSignature(&sig.Lattice))
-	result = appendLV(result, uov.SerializeSignature(&sig.MQ))
-	result = appendLV(result, sig.Hash.Data)
-	return result
+// SerializeSignature serializes a composite signature:
+// header || nonce:32 || [lat_len:4][lat] || [mq_len:4][mq] || [hash_len:4][hash].
+func SerializeSignature(sig *kmosaic.MOSAICSignature, params kmosaic.SignParams) []byte {
+	hdr, err := wire.Header(wire.TypeSignature, params.Level)
+	if err != nil {
+		return nil
+	}
+	out := append(hdr, sig.Nonce...)
+	out = wire.AppendLV(out, latsig.SerializeSignature(&sig.Lattice, params.Lattice))
+	out = wire.AppendLV(out, uov.SerializeSignature(&sig.MQ))
+	return wire.AppendLV(out, sig.Hash.Data)
 }
 
-// DeserializeSignature parses a composite signature for the given parameters.
-func DeserializeSignature(data []byte, params kmosaic.SignParams) (*kmosaic.MOSAICSignature, error) {
-	latBytes, offset, err := readLV(data, 0, "signature lattice component")
+// DeserializeSignature parses a composite signature. The parameters are taken
+// from the header and returned with the signature.
+func DeserializeSignature(data []byte) (*kmosaic.MOSAICSignature, kmosaic.SignParams, error) {
+	level, body, err := wire.ParseHeader(data, wire.TypeSignature)
 	if err != nil {
-		return nil, err
+		return nil, kmosaic.SignParams{}, fmt.Errorf("%w: %v", kmosaic.ErrInvalidSignature, err)
 	}
-	mqBytes, offset, err := readLV(data, offset, "signature MQ component")
+	params, _ := core.GetSignParams(level)
+	r := wire.NewReader(body)
+	nonce, err := r.Fixed(NonceSize)
 	if err != nil {
-		return nil, err
+		return nil, params, fmt.Errorf("%w: nonce truncated", kmosaic.ErrInvalidSignature)
 	}
-	hashBytes, offset, err := readLV(data, offset, "signature hash component")
+	latBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, params, fmt.Errorf("%w: lattice component: %v", kmosaic.ErrInvalidSignature, err)
 	}
-	if offset != len(data) {
-		return nil, errors.New("invalid signature: trailing data")
-	}
-	latSig, err := latsig.DeserializeSignature(latBytes)
+	mqBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, params, fmt.Errorf("%w: MQ component: %v", kmosaic.ErrInvalidSignature, err)
+	}
+	hashBytes, err := r.LV(MaxComponentSize)
+	if err != nil || r.Done() != nil {
+		return nil, params, fmt.Errorf("%w: hash component truncated or trailing data", kmosaic.ErrInvalidSignature)
+	}
+	latSig, err := latsig.DeserializeSignature(latBytes, params.Lattice)
+	if err != nil {
+		return nil, params, fmt.Errorf("%w: %v", kmosaic.ErrInvalidSignature, err)
 	}
 	mqSig, err := uov.DeserializeSignature(mqBytes, params.MQ)
 	if err != nil {
-		return nil, err
+		return nil, params, fmt.Errorf("%w: %v", kmosaic.ErrInvalidSignature, err)
 	}
 	if len(hashBytes) != slhdsa.SignatureSize(params.Hash) {
-		return nil, errors.New("invalid signature: hash component has wrong length")
+		return nil, params, fmt.Errorf("%w: hash component has wrong length", kmosaic.ErrInvalidSignature)
 	}
-	return &kmosaic.MOSAICSignature{Lattice: *latSig, MQ: *mqSig, Hash: kmosaic.HashSignature{Data: append([]byte{}, hashBytes...)}}, nil
+	return &kmosaic.MOSAICSignature{
+		Nonce:   append([]byte{}, nonce...),
+		Lattice: *latSig,
+		MQ:      *mqSig,
+		Hash:    kmosaic.HashSignature{Data: append([]byte{}, hashBytes...)},
+	}, params, nil
 }

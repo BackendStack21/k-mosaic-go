@@ -1,33 +1,56 @@
 package latsig
 
 import (
+	"crypto/sha3"
 	"encoding/binary"
 	"runtime"
 	"sync"
 
-	"golang.org/x/crypto/sha3"
+	"github.com/BackendStack21/k-mosaic-go/core"
 )
 
 // Low-level lattice helpers for the signature scheme. Everything here follows
 // CRYSTALS-Dilithium / FIPS 204 with matrices over Z_q in place of polynomial
 // rings.
+//
+// Constant-time policy: no value that depends on secret data is ever divided
+// or reduced with a hardware division. All reductions use the compile-time
+// modulus q = 2^23 - 2^13 + 1 through shifts, masks and multiplications
+// (reduce32, reduce64, freeze), and the FIPS 204 Decompose and Power2Round
+// use the reference implementation's multiply-shift formulas.
 
-// shake computes SHAKE256 over the concatenation of parts.
+const (
+	qMod     = 8380417         // q = 2^23 - 2^13 + 1
+	gamma1   = 1 << 19         // mask range
+	gamma2   = (qMod - 1) / 32 // 261888
+	alpha    = 2 * gamma2      // 523776; HighBits take values in [0, 16)
+	dropBits = 13              // d: bits dropped from T by Power2Round
+	chalLen  = 256             // L: length of the challenge vector
+	t0Half   = 1 << (dropBits - 1)
+	maxTau   = 64            // core.ValidateLatticeSignParams bound
+	t1Bits   = 23 - dropBits // 10 bits per T1 entry
+	t0Bits   = dropBits      // 13 bits per T0 entry
+	zBits    = 20            // bits per packed response entry
+	w1Bits   = 4             // bits per HighBits entry in the challenge hash
+	t1Limit  = 1 << t1Bits   // T1 entries are in [0, 1024)
+	zLimit   = 1 << zBits    // packed response values are in [0, 2^20)
+	signLane = 4             // masks processed per pass over A
+)
+
+// The constants above must agree with the frozen parameter definitions.
+var _ = [1]struct{}{}[qMod-core.LatticeSignQ]
+
+// shake computes SHAKE256 over the concatenation of parts. The sponge state
+// is cleared afterwards since some inputs (K, ρ') are secret.
 func shake(outLen int, parts ...[]byte) []byte {
-	h := sha3.NewShake256()
+	h := sha3.NewSHAKE256()
+	defer h.Reset()
 	for _, p := range parts {
-		h.Write(p)
+		_, _ = h.Write(p)
 	}
 	out := make([]byte, outLen)
 	_, _ = h.Read(out)
 	return out
-}
-
-// uint16LE returns v as 2 little-endian bytes.
-func uint16LE(v uint16) []byte {
-	b := make([]byte, 2)
-	binary.LittleEndian.PutUint16(b, v)
-	return b
 }
 
 // uint32LE returns v as 4 little-endian bytes.
@@ -37,20 +60,104 @@ func uint32LE(v uint32) []byte {
 	return b
 }
 
-// modQ reduces x into [0, q).
-func modQ(x int64, q int) int32 {
-	r := x % int64(q)
-	if r < 0 {
-		r += int64(q)
+// reduce32 returns r ≡ a (mod q) with -6283008 <= r <= 6283008 for
+// |a| <= 2^31 - 2^22 - 1 (FIPS 204 reference reduce32).
+func reduce32(a int32) int32 {
+	t := (a + (1 << 22)) >> 23
+	return a - t*qMod
+}
+
+// caddq adds q to a if a is negative, without branching.
+func caddq(a int32) int32 {
+	return a + ((a >> 31) & qMod)
+}
+
+// freeze returns a mod q in [0, q) for |a| <= 2^31 - 2^22 - 1.
+func freeze(a int32) int32 {
+	return caddq(reduce32(a))
+}
+
+// reduce64 returns x mod q in [0, q) for |x| < 2^62, using 2^23 ≡ 2^13 - 1
+// (mod q) to fold the high part four times and then freeze.
+func reduce64(x int64) int32 {
+	const lo23 = 1<<23 - 1
+	const fold = 1<<13 - 1
+	x = (x>>23)*fold + (x & lo23) // |x| < 2^52 + 2^23
+	x = (x>>23)*fold + (x & lo23) // |x| < 2^42 + 2^23
+	x = (x>>23)*fold + (x & lo23) // |x| < 2^32 + 2^23
+	x = (x>>23)*fold + (x & lo23) // -2^23 < x < 2^24
+	return freeze(int32(x))
+}
+
+// absU returns |x| as an unsigned value, without branching (correct for MinInt32).
+func absU(x int32) uint32 {
+	m := x >> 31
+	return uint32((x ^ m) - m)
+}
+
+// normU returns max |v_i| without data-dependent branches.
+func normU(v []int32) uint32 {
+	var max uint32
+	for _, x := range v {
+		a := absU(x)
+		// mask is all ones when a > max (the 64-bit difference borrows).
+		mask := -uint32((uint64(max) - uint64(a)) >> 63)
+		max = (max &^ mask) | (a & mask)
 	}
-	return int32(r)
+	return max
+}
+
+// decompose splits r ∈ [0, q) as r ≡ r1·2γ2 + r0 with r0 ∈ (-γ2, γ2] and the
+// FIPS 204 adjustment at r - r0 = q - 1 (r1 = 0, r0 = r0 - 1). It is the
+// reference implementation's constant-time formula for γ2 = (q-1)/32.
+func decompose(r int32) (r1, r0 int32) {
+	r1 = (r + 127) >> 7
+	r1 = (r1*1025 + (1 << 21)) >> 22
+	r1 &= 15
+	r0 = r - r1*alpha
+	r0 -= (((qMod-1)/2 - r0) >> 31) & qMod
+	return r1, r0
+}
+
+// highBits returns HighBits(r) for r ∈ [0, q).
+func highBits(r int32) int32 {
+	r1, _ := decompose(r)
+	return r1
+}
+
+// makeHint returns 1 when HighBits(r) != HighBits(r + z mod q), the FIPS 204
+// MakeHint(z, r) for r ∈ [0, q) and |z| < 2^30, without branching.
+func makeHint(z, r int32) int32 {
+	d := highBits(r) ^ highBits(freeze(r+z))
+	return int32(uint32(d|-d) >> 31)
+}
+
+// useHint is FIPS 204 UseHint for γ2 = (q-1)/32 (m = 16): it recovers the
+// high bits of r + z from r and the hint produced by makeHint(-z, r + z).
+// It only runs on public data in Verify.
+func useHint(h, r int32) int32 {
+	r1, r0 := decompose(r)
+	if h == 0 {
+		return r1
+	}
+	if r0 > 0 {
+		return (r1 + 1) & 15
+	}
+	return (r1 - 1) & 15
+}
+
+// power2Round splits r ∈ [0, q) as r = r1·2^d + r0 with r0 ∈ (-2^(d-1), 2^(d-1)].
+func power2Round(r int32) (r1, r0 int32) {
+	r1 = (r + t0Half - 1) >> dropBits
+	r0 = r - r1<<dropBits
+	return r1, r0
 }
 
 // parallelRows runs fn(start, end) over [0, rows) split across GOMAXPROCS workers.
 func parallelRows(rows int, fn func(start, end int)) {
 	workers := runtime.GOMAXPROCS(0)
-	if workers > rows {
-		workers = rows
+	if workers > rows/16 {
+		workers = rows / 16
 	}
 	if workers <= 1 {
 		fn(0, rows)
@@ -58,15 +165,8 @@ func parallelRows(rows int, fn func(start, end int)) {
 	}
 	per := (rows + workers - 1) / workers
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		start := w * per
-		end := start + per
-		if end > rows {
-			end = rows
-		}
-		if start >= end {
-			break
-		}
+	for start := 0; start < rows; start += per {
+		end := min(start+per, rows)
 		wg.Add(1)
 		go func(s, e int) {
 			defer wg.Done()
@@ -77,23 +177,26 @@ func parallelRows(rows int, fn func(start, end int)) {
 }
 
 // expandA derives the public M×N matrix A over Z_q from rho. Row i is read
-// from SHAKE256(rho || i) by rejection sampling of 23-bit values below q.
-func expandA(rho []byte, m, n, q int) []int32 {
+// from SHAKE128(rho || i) by rejection sampling of 23-bit values below q, as
+// in FIPS 204 RejNTTPoly.
+func expandA(rho []byte, m, n int) []int32 {
 	A := make([]int32, m*n)
 	parallelRows(m, func(start, end int) {
-		h := sha3.NewShake256()
-		buf := make([]byte, 3*256)
+		h := sha3.NewSHAKE128()
+		var buf [3 * 168]byte // a multiple of the SHAKE128 rate
+		var idx [4]byte
 		for i := start; i < end; i++ {
 			h.Reset()
-			h.Write(rho)
-			h.Write(uint32LE(uint32(i)))
+			_, _ = h.Write(rho)
+			binary.LittleEndian.PutUint32(idx[:], uint32(i))
+			_, _ = h.Write(idx[:])
 			row := A[i*n : (i+1)*n]
 			k := 0
 			for k < n {
-				_, _ = h.Read(buf)
+				_, _ = h.Read(buf[:])
 				for off := 0; off+3 <= len(buf) && k < n; off += 3 {
 					v := (uint32(buf[off]) | uint32(buf[off+1])<<8 | uint32(buf[off+2])<<16) & 0x7FFFFF
-					if int(v) < q {
+					if v < qMod {
 						row[k] = int32(v)
 						k++
 					}
@@ -104,223 +207,242 @@ func expandA(rho []byte, m, n, q int) []int32 {
 	return A
 }
 
-// sampleEta samples count values uniform in [-eta, eta] from
+// sampleEta samples count values uniform in [-eta, eta] (eta ∈ {2, 4}) from
 // SHAKE256(seed || nonce) by rejection on nibbles (FIPS 204 RejBoundedPoly).
 func sampleEta(seed []byte, nonce uint16, count, eta int) []int8 {
 	out := make([]int8, count)
-	h := sha3.NewShake256()
-	h.Write(seed)
-	h.Write(uint16LE(nonce))
-	buf := make([]byte, 512)
+	h := sha3.NewSHAKE256()
+	defer h.Reset()
+	_, _ = h.Write(seed)
+	var nb [2]byte
+	binary.LittleEndian.PutUint16(nb[:], nonce)
+	_, _ = h.Write(nb[:])
+	var buf [136]byte
+	defer clear(buf[:])
 	k := 0
 	for k < count {
-		_, _ = h.Read(buf)
+		_, _ = h.Read(buf[:])
 		for _, b := range buf {
-			for _, t := range [2]byte{b & 0x0F, b >> 4} {
+			for _, t := range [2]uint32{uint32(b & 0x0F), uint32(b >> 4)} {
 				if k >= count {
 					break
 				}
-				switch eta {
-				case 2:
+				if eta == 2 {
 					if t < 15 {
-						out[k] = int8(2 - int(t%5))
+						// t mod 5 without division (FIPS 204 CoeffFromHalfByte).
+						out[k] = int8(2 - int32(t-((205*t)>>10)*5))
 						k++
 					}
-				case 4:
-					if t < 9 {
-						out[k] = int8(4 - int(t))
-						k++
-					}
-				default:
-					// Generic rejection: uniform in [0, 2eta].
-					if int(t) < 2*eta+1 {
-						out[k] = int8(eta - int(t))
-						k++
-					}
+				} else if t < 9 {
+					out[k] = int8(4 - int32(t))
+					k++
 				}
-			}
-			if k >= count {
-				break
 			}
 		}
 	}
 	return out
 }
 
-// expandMask samples the mask y with n entries uniform in [-(gamma1-1), gamma1]
-// from SHAKE256(rhoPrime || kappa). gamma1 must be 2^19 (20 bits per entry).
-func expandMask(rhoPrime []byte, kappa uint16, n, gamma1 int) []int32 {
-	y := make([]int32, n)
-	h := sha3.NewShake256()
-	h.Write(rhoPrime)
-	h.Write(uint16LE(kappa))
-	buf := make([]byte, 5*128) // 5 bytes encode two 20-bit values
+// expandMaskLane samples a mask y with n entries uniform in (-γ1, γ1] from
+// SHAKE256(rhoPrime || kappa) and writes it into lane j of the interleaved
+// buffer ys (ys[signLane*k + j] = y_k).
+func expandMaskLane(rhoPrime []byte, kappa uint16, n int, ys []int32, j int) {
+	h := sha3.NewSHAKE256()
+	defer h.Reset()
+	_, _ = h.Write(rhoPrime)
+	var kb [2]byte
+	binary.LittleEndian.PutUint16(kb[:], kappa)
+	_, _ = h.Write(kb[:])
+	var buf [5 * 136]byte // 5 bytes encode two 20-bit values
+	defer clear(buf[:])
 	k := 0
 	for k < n {
-		_, _ = h.Read(buf)
+		_, _ = h.Read(buf[:])
 		for off := 0; off+5 <= len(buf) && k < n; off += 5 {
 			t0 := uint32(buf[off]) | uint32(buf[off+1])<<8 | uint32(buf[off+2]&0x0F)<<16
 			t1 := uint32(buf[off+2]>>4) | uint32(buf[off+3])<<4 | uint32(buf[off+4])<<12
-			y[k] = int32(gamma1) - int32(t0)
+			ys[signLane*k+j] = gamma1 - int32(t0)
 			k++
 			if k < n {
-				y[k] = int32(gamma1) - int32(t1)
+				ys[signLane*k+j] = gamma1 - int32(t1)
 				k++
 			}
 		}
 	}
-	return y
 }
 
-// sampleInBall derives the challenge c ∈ {-1,0,1}^l with exactly tau non-zero
-// entries from c̃ (FIPS 204 SampleInBall).
-func sampleInBall(ctilde []byte, tau, l int) []int8 {
-	c := make([]int8, l)
-	h := sha3.NewShake256()
-	h.Write(ctilde)
-	signBytes := make([]byte, 8)
-	_, _ = h.Read(signBytes)
-	signs := binary.LittleEndian.Uint64(signBytes)
-	one := make([]byte, 1)
-	for i := l - tau; i < l; i++ {
+// challenge is the sparse form of c ∈ {-1,0,1}^256 with tau non-zero entries.
+type challenge struct {
+	pos [maxTau]uint8
+	sgn [maxTau]int32
+	n   int
+}
+
+// sampleInBall derives the challenge c with exactly tau non-zero ±1 entries
+// from c̃ (FIPS 204 SampleInBall) and returns it in dense and sparse form.
+func sampleInBall(ctilde []byte, tau int) (dense [chalLen]int8, sparse challenge) {
+	h := sha3.NewSHAKE256()
+	_, _ = h.Write(ctilde)
+	var buf [136]byte
+	_, _ = h.Read(buf[:])
+	signs := binary.LittleEndian.Uint64(buf[:8])
+	off := 8
+	for i := chalLen - tau; i < chalLen; i++ {
 		var j int
 		for {
-			_, _ = h.Read(one)
-			j = int(one[0])
+			if off == len(buf) {
+				_, _ = h.Read(buf[:])
+				off = 0
+			}
+			j = int(buf[off])
+			off++
 			if j <= i {
 				break
 			}
 		}
-		c[i] = c[j]
-		c[j] = int8(1 - 2*int(signs&1))
+		dense[i] = dense[j]
+		dense[j] = int8(1 - 2*int(signs&1))
 		signs >>= 1
 	}
-	return c
-}
-
-// decompose splits r ∈ [0, q) as r = r1·(2·gamma2) + r0 with r0 ∈ (-gamma2, gamma2],
-// with the FIPS 204 adjustment at r - r0 = q - 1.
-func decompose(r int32, q, gamma2 int) (r1, r0 int32) {
-	alpha := int32(2 * gamma2)
-	r0 = r % alpha
-	if r0 > int32(gamma2) {
-		r0 -= alpha
-	}
-	if r-r0 == int32(q-1) {
-		return 0, r0 - 1
-	}
-	return (r - r0) / alpha, r0
-}
-
-// highBits returns HighBits of every entry of w (entries in [0, q)).
-func highBits(w []int32, q, gamma2 int) []int32 {
-	out := make([]int32, len(w))
-	for i, r := range w {
-		out[i], _ = decompose(r, q, gamma2)
-	}
-	return out
-}
-
-// lowBits returns LowBits of every entry of w (entries in [0, q)).
-func lowBits(w []int32, q, gamma2 int) []int32 {
-	out := make([]int32, len(w))
-	for i, r := range w {
-		_, out[i] = decompose(r, q, gamma2)
-	}
-	return out
-}
-
-// matVec computes A·x mod q for the M×N row-major matrix A (entries in [0, q))
-// and x with |x_i| < 2^20. Products stay below 2^43 and sums below 2^55.
-func matVec(A []int32, x []int32, m, n, q int) []int32 {
-	out := make([]int32, m)
-	parallelRows(m, func(start, end int) {
-		for i := start; i < end; i++ {
-			row := A[i*n : (i+1)*n]
-			var sum int64
-			for k, a := range row {
-				sum += int64(a) * int64(x[k])
-			}
-			out[i] = modQ(sum, q)
+	for i, v := range dense {
+		if v != 0 {
+			sparse.pos[sparse.n] = uint8(i)
+			sparse.sgn[sparse.n] = int32(v)
+			sparse.n++
 		}
-	})
-	return out
+	}
+	return dense, sparse
 }
 
-// mulSmall computes S·c for the rows×l row-major small matrix S and challenge c.
-// Entries are bounded by tau·eta in absolute value.
-func mulSmall(S []int8, c []int8, rows, l int) []int32 {
-	out := make([]int32, rows)
+// mulSparse8 computes out = S·c for the rows×256 row-major matrix S by adding
+// the tau signed entries selected by c in each row.
+func mulSparse8(S []int8, c *challenge, rows int, out []int32) {
+	pos := c.pos[:c.n]
+	sgn := c.sgn[:c.n]
 	for i := 0; i < rows; i++ {
-		row := S[i*l : (i+1)*l]
+		row := (*[chalLen]int8)(S[i*chalLen:])
 		var sum int32
-		for j, s := range row {
-			sum += int32(s) * int32(c[j])
+		for t, p := range pos {
+			sum += sgn[t] * int32(row[p])
 		}
 		out[i] = sum
 	}
-	return out
 }
 
-// mulT computes T·c mod q for the M×L row-major matrix T (entries in [0, q)).
-func mulT(T []int32, c []int8, m, l, q int) []int32 {
-	out := make([]int32, m)
-	for i := 0; i < m; i++ {
-		row := T[i*l : (i+1)*l]
-		var sum int64
-		for j, t := range row {
-			sum += int64(t) * int64(c[j])
+// mulSparse32 computes out = T·c for the rows×256 row-major matrix T.
+func mulSparse32(T []int32, c *challenge, rows int, out []int32) {
+	pos := c.pos[:c.n]
+	sgn := c.sgn[:c.n]
+	for i := 0; i < rows; i++ {
+		row := (*[chalLen]int32)(T[i*chalLen:])
+		var sum int32
+		for t, p := range pos {
+			sum += sgn[t] * row[p]
 		}
-		out[i] = modQ(sum, q)
+		out[i] = sum
 	}
-	return out
 }
 
-// computeT computes T = A·S1 + S2 mod q, with A M×N, S1 N×L, S2 M×L (row-major).
-func computeT(A []int32, S1, S2 []int8, m, n, l, q int) []int32 {
+// matVec computes out = A·x - sub·2^d mod q for the M×N row-major matrix A
+// (entries in [0, q)) and x with |x_i| <= 2^19; sub may be nil. Sums stay
+// below 2^53 in absolute value.
+func matVec(A []int32, x []int32, sub []int32, m, n int, out []int32) {
+	parallelRows(m, func(start, end int) {
+		for i := start; i < end; i++ {
+			row := A[i*n : (i+1)*n]
+			xs := x[:len(row)]
+			var s0, s1, s2, s3 int64
+			k := 0
+			for ; k+4 <= len(row); k += 4 {
+				s0 += int64(row[k]) * int64(xs[k])
+				s1 += int64(row[k+1]) * int64(xs[k+1])
+				s2 += int64(row[k+2]) * int64(xs[k+2])
+				s3 += int64(row[k+3]) * int64(xs[k+3])
+			}
+			for ; k < len(row); k++ {
+				s0 += int64(row[k]) * int64(xs[k])
+			}
+			sum := s0 + s1 + s2 + s3
+			if sub != nil {
+				sum -= int64(sub[i]) << dropBits
+			}
+			out[i] = reduce64(sum)
+		}
+	})
+}
+
+// matVec4 computes the four products out[j] = A·y_j mod q in one pass over A,
+// where ys holds the masks interleaved (ys[signLane*k + j] = y_j[k]). Signing
+// spends most of its time streaming A, so four products cost far less than
+// four passes. n must be a multiple of 4.
+func matVec4(A []int32, ys []int32, m, n int, out *[signLane][]int32) {
+	parallelRows(m, func(start, end int) {
+		for i := start; i < end; i++ {
+			row := A[i*n : (i+1)*n]
+			ys := ys[:signLane*len(row)]
+			var s0, s1, s2, s3 int64
+			for k := 0; k+4 <= len(row); k += 4 {
+				a := (*[4]int32)(row[k:])
+				y := (*[4 * signLane]int32)(ys[signLane*k:])
+				a0, a1, a2, a3 := int64(a[0]), int64(a[1]), int64(a[2]), int64(a[3])
+				s0 += (a0*int64(y[0]) + a1*int64(y[4])) + (a2*int64(y[8]) + a3*int64(y[12]))
+				s1 += (a0*int64(y[1]) + a1*int64(y[5])) + (a2*int64(y[9]) + a3*int64(y[13]))
+				s2 += (a0*int64(y[2]) + a1*int64(y[6])) + (a2*int64(y[10]) + a3*int64(y[14]))
+				s3 += (a0*int64(y[3]) + a1*int64(y[7])) + (a2*int64(y[11]) + a3*int64(y[15]))
+			}
+			out[0][i] = reduce64(s0)
+			out[1][i] = reduce64(s1)
+			out[2][i] = reduce64(s2)
+			out[3][i] = reduce64(s3)
+		}
+	})
+}
+
+// computeT computes T = A·S1 + S2 mod q, with A M×N, S1 N×L and S2 M×L
+// (row-major). S1 is transposed first so that every entry of T is a
+// sequential dot product; four columns share each load of A.
+func computeT(A []int32, S1, S2 []int8, m, n int) []int32 {
+	const l = chalLen
+	s1t := make([]int8, n*l)
+	defer clear(s1t)
+	for k := 0; k < n; k++ {
+		for j := 0; j < l; j++ {
+			s1t[j*n+k] = S1[k*l+j]
+		}
+	}
 	T := make([]int32, m*l)
 	parallelRows(m, func(start, end int) {
-		acc := make([]int64, l)
 		for i := start; i < end; i++ {
-			for j := range acc {
-				acc[j] = 0
-			}
 			row := A[i*n : (i+1)*n]
-			for k, a := range row {
-				s1row := S1[k*l : (k+1)*l]
-				av := int64(a)
-				for j, s := range s1row {
-					acc[j] += av * int64(s)
+			for j := 0; j < l; j += 4 {
+				c0 := s1t[j*n : j*n+len(row)]
+				c1 := s1t[(j+1)*n : (j+1)*n+len(row)]
+				c2 := s1t[(j+2)*n : (j+2)*n+len(row)]
+				c3 := s1t[(j+3)*n : (j+3)*n+len(row)]
+				var a0, a1, a2, a3 int64
+				for k, a := range row {
+					av := int64(a)
+					a0 += av * int64(c0[k])
+					a1 += av * int64(c1[k])
+					a2 += av * int64(c2[k])
+					a3 += av * int64(c3[k])
 				}
-			}
-			for j := 0; j < l; j++ {
-				T[i*l+j] = modQ(acc[j]+int64(S2[i*l+j]), q)
+				t := T[i*l+j : i*l+j+4]
+				s2 := S2[i*l+j : i*l+j+4]
+				t[0] = reduce64(a0 + int64(s2[0]))
+				t[1] = reduce64(a1 + int64(s2[1]))
+				t[2] = reduce64(a2 + int64(s2[2]))
+				t[3] = reduce64(a3 + int64(s2[3]))
 			}
 		}
 	})
 	return T
 }
 
-// packW1 encodes HighBits values (all below 2^8 for the supported gamma2) as
-// one byte each for hashing.
-func packW1(w1 []int32) []byte {
-	out := make([]byte, len(w1))
-	for i, v := range w1 {
-		out[i] = byte(v)
+// packW1 encodes HighBits values (in [0, 16)) with 4 bits each, low nibble
+// first, as FIPS 204 w1Encode does for γ2 = (q-1)/32. len(w1) must be even.
+func packW1(w1 []int32, out []byte) {
+	for i := range out {
+		out[i] = byte(w1[2*i]&15) | byte(w1[2*i+1]&15)<<4
 	}
-	return out
-}
-
-// infNorm returns max |v_i|.
-func infNorm(v []int32) int32 {
-	var max int32
-	for _, x := range v {
-		if x < 0 {
-			x = -x
-		}
-		if x > max {
-			max = x
-		}
-	}
-	return max
 }

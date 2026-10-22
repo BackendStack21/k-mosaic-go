@@ -35,10 +35,15 @@ func TestClaim_SLSSClusteringAttackFails(t *testing.T) {
 		// because we hold the secret key.
 		share := slss.Decrypt(&res.Ciphertext.C1, kp.SecretKey.SLSS, pk.Params.SLSS)
 
-		v := res.Ciphertext.C1.V
+		// V holds DV-bit compressed coefficients; decompress before clustering.
+		dv := pk.Params.SLSS.DV
+		v := make([]int, len(res.Ciphertext.C1.V))
+		for j, c := range res.Ciphertext.C1.V {
+			v[j] = (int(c)*q + (1 << (dv - 1))) >> dv
+		}
 		correct := 0
 		for j := range v {
-			d := int(v[j]) - int(v[0])
+			d := v[j] - v[0]
 			d = ((d % q) + q) % q
 			bit := byte(0)
 			if d > q/4 && d < 3*q/4 {
@@ -72,11 +77,53 @@ func TestClaim_ComponentsRequireSecretKeys(t *testing.T) {
 		t.Fatal("SLSS ciphertext decrypted with an unrelated secret key")
 	}
 	c2, _ := qcsd.Encrypt(pk.Code, share, pk.Params.Code, rnd)
-	if got := qcsd.Decrypt(c2, other.SecretKey.Code, pk.Params.Code); got != nil && bytes.Equal(got, share) {
+	if got, ok := qcsd.Decrypt(c2, other.SecretKey.Code, pk.Params.Code); ok == 1 && bytes.Equal(got, share) {
 		t.Fatal("code ciphertext decrypted with an unrelated secret key")
 	}
-	if got := qcsd.Decrypt(c2, kmosaic.CodeSecretKey{X: make([]uint64, len(kp.SecretKey.Code.X)), Y: make([]uint64, len(kp.SecretKey.Code.Y))}, pk.Params.Code); got != nil && bytes.Equal(got, share) {
-		t.Fatal("code ciphertext decrypted with an empty secret key")
+}
+
+// TestClaim_CiphertextCarriesNoShareInformation checks that a ciphertext is
+// exactly the two component ciphertexts: the 3.0 "proof" field, which masked
+// the shares with a hash of a public value and thereby leaked both shares,
+// is gone and nothing in the serialization is derived from the shares.
+func TestClaim_CiphertextCarriesNoShareInformation(t *testing.T) {
+	kp, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
+	res, _ := kem.Encapsulate(&kp.PublicKey)
+	params := kp.PublicKey.Params
+	ser := kem.SerializeCiphertext(&res.Ciphertext, params)
+	c1 := slss.SerializeCiphertext(&res.Ciphertext.C1, params.SLSS)
+	c2 := qcsd.SerializeCiphertext(&res.Ciphertext.C2, params.Code)
+	if len(ser) != 8+4+len(c1)+4+len(c2) {
+		t.Fatalf("ciphertext carries %d extra bytes beyond the two component ciphertexts", len(ser)-(8+4+len(c1)+4+len(c2)))
+	}
+}
+
+// TestClaim_SignatureComponentsCannotBeRecombined checks strong unforgeability
+// of the combiner: components of two valid signatures on the same message
+// cannot be mixed into a third valid signature, because each signature's
+// nonce is part of the signed digest.
+func TestClaim_SignatureComponentsCannotBeRecombined(t *testing.T) {
+	kp, _ := sign.GenerateKeyPair(kmosaic.MOS_128)
+	msg := []byte("same message twice")
+	s1, _ := sign.Sign(&kp.SecretKey, &kp.PublicKey, msg)
+	s2, _ := sign.Sign(&kp.SecretKey, &kp.PublicKey, msg)
+	if !sign.Verify(&kp.PublicKey, msg, s1) || !sign.Verify(&kp.PublicKey, msg, s2) {
+		t.Fatal("genuine signatures rejected")
+	}
+	mixed := *s1
+	mixed.MQ = s2.MQ
+	if sign.Verify(&kp.PublicKey, msg, &mixed) {
+		t.Fatal("signature with a component from another signature on the same message accepted")
+	}
+	mixed = *s1
+	mixed.Hash = s2.Hash
+	if sign.Verify(&kp.PublicKey, msg, &mixed) {
+		t.Fatal("signature with a swapped hash component accepted")
+	}
+	mixed = *s1
+	mixed.Nonce = s2.Nonce
+	if sign.Verify(&kp.PublicKey, msg, &mixed) {
+		t.Fatal("signature with a swapped nonce accepted")
 	}
 }
 

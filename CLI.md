@@ -3,9 +3,16 @@
 The `k-mosaic-cli` is a command-line interface for the kMOSAIC post-quantum cryptographic library. It provides terminal-based access to key encapsulation, encryption/decryption, and digital signature operations.
 
 > **Warning:** kMOSAIC is experimental and unreviewed. Key files produced by
-> versions before 3.0.0 are not readable by this version (and those before
-> 2.0.0 are insecure); see [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
-> Expect key files of 0.4–2 MB: the schemes are unstructured on purpose.
+> versions before 4.0.0 are not readable by this version (and those before
+> 4.0.0 are insecure); see [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
+> Expect key files of 0.35–1.2 MB: the schemes are unstructured on purpose.
+>
+> **4.0.0 CLI changes:** `keygen --output X` writes `X` (both keys, mode 0600)
+> and `X.pub` (public key only); share only the `.pub` file. `sign verify`
+> requires `--message` or `--input`. Exit codes: 0 success or valid signature,
+> 1 invalid signature or failed authentication, 2 error. `--format` accepts
+> `hex` or `base64` (the `json` value is gone). The `encapsulate-deterministic`
+> and `slss-debug` subcommands were removed.
 
 ## TL;DR
 

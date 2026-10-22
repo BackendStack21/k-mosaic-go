@@ -2,11 +2,10 @@ package kem
 
 import (
 	"bytes"
-	"encoding/binary"
+	"errors"
 	"testing"
 
 	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
 )
 
 // TestDecapsulateMalformedCiphertextShape verifies that a ciphertext whose
@@ -55,45 +54,54 @@ func TestDecapsulateMalformedCiphertextShape(t *testing.T) {
 	}
 }
 
-// TestDeserializeCiphertextTruncatedLengthFields verifies that buffers ending
-// where a length prefix should start are rejected rather than panicking.
-func TestDeserializeCiphertextTruncatedLengthFields(t *testing.T) {
-	params, _ := core.GetParams(kmosaic.MOS_128)
-	data := make([]byte, 12)
-	binary.LittleEndian.PutUint32(data[0:], 8)
-	if _, err := DeserializeCiphertext(data, params); err == nil {
-		t.Fatal("expected error for missing C2 length")
-	}
+// TestDeserializeTruncatedAndOversized verifies that every parser rejects
+// truncated input, trailing data and huge length prefixes without panicking.
+func TestDeserializeTruncatedAndOversized(t *testing.T) {
 	kp, _ := GenerateKeyPair(kmosaic.MOS_128)
+	params := kp.PublicKey.Params
 	res, _ := Encapsulate(&kp.PublicKey)
-	full := SerializeCiphertext(&res.Ciphertext, params)
-	for _, cut := range []int{1, 4, 100, len(full) / 2, len(full) - len(res.Ciphertext.Proof) - 1} {
-		if _, err := DeserializeCiphertext(full[:cut], params); err == nil {
-			t.Errorf("expected error for ciphertext truncated to %d bytes", cut)
+	ctBytes := SerializeCiphertext(&res.Ciphertext, params)
+	pkBytes := SerializePublicKey(&kp.PublicKey)
+	skBytes := SerializeSecretKey(&kp.SecretKey, params)
+
+	for _, cut := range []int{0, 3, 8, 12, 100, len(ctBytes) / 2, len(ctBytes) - 1} {
+		if _, _, err := DeserializeCiphertext(ctBytes[:cut]); err == nil {
+			t.Errorf("ciphertext truncated to %d bytes accepted", cut)
 		}
+	}
+	if _, _, err := DeserializeCiphertext(append(append([]byte{}, ctBytes...), 0)); err == nil {
+		t.Error("ciphertext with trailing byte accepted")
+	}
+	for _, cut := range []int{8, 12, len(pkBytes) / 2, len(pkBytes) - 1} {
+		if _, err := DeserializePublicKey(pkBytes[:cut]); err == nil {
+			t.Errorf("public key truncated to %d bytes accepted", cut)
+		}
+	}
+	for _, cut := range []int{8, 12, len(skBytes) / 2, len(skBytes) - 1} {
+		if _, err := DeserializeSecretKey(skBytes[:cut]); err == nil {
+			t.Errorf("secret key truncated to %d bytes accepted", cut)
+		}
+	}
+	// Huge length prefix right after the header.
+	huge := append([]byte{}, ctBytes[:8]...)
+	huge = append(huge, 0xff, 0xff, 0xff, 0xff, 1, 2, 3)
+	if _, _, err := DeserializeCiphertext(huge); err == nil {
+		t.Error("huge C1 length accepted")
 	}
 }
 
-// TestDeserializePublicKeyTruncatedLengthFields verifies that a public key
-// buffer ending where a component length prefix should start is rejected.
-func TestDeserializePublicKeyTruncatedLengthFields(t *testing.T) {
-	level := []byte(kmosaic.MOS128)
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(level)))
-	data := append(append([]byte{}, lenBuf...), level...)
-	if _, err := DeserializePublicKey(data); err == nil {
-		t.Fatal("expected error for missing SLSS length")
+// TestDecapsulateRequiresMatchingPublicKey verifies the key-mismatch oracle is closed.
+func TestDecapsulateRequiresMatchingPublicKey(t *testing.T) {
+	kp1, _ := GenerateKeyPair(kmosaic.MOS_128)
+	kp2, _ := GenerateKeyPair(kmosaic.MOS_128)
+	res, _ := Encapsulate(&kp1.PublicKey)
+	if _, err := Decapsulate(&kp1.SecretKey, &kp2.PublicKey, &res.Ciphertext); !errors.Is(err, kmosaic.ErrKeyMismatch) {
+		t.Fatalf("expected ErrKeyMismatch, got %v", err)
 	}
-	binary.LittleEndian.PutUint32(lenBuf, 8)
-	data = append(data, lenBuf...)
-	data = append(data, make([]byte, 8)...)
-	if _, err := DeserializePublicKey(data); err == nil {
-		t.Fatal("expected error for missing code length")
+	if _, err := Decapsulate(&kp1.SecretKey, &kp1.PublicKey, nil); err == nil {
+		t.Fatal("nil ciphertext accepted")
 	}
-	binary.LittleEndian.PutUint32(lenBuf, 4)
-	data = append(data, lenBuf...)
-	data = append(data, make([]byte, 4)...)
-	if _, err := DeserializePublicKey(data); err == nil {
-		t.Fatal("expected error for missing binding")
+	if _, err := Decapsulate(nil, &kp1.PublicKey, &res.Ciphertext); err == nil {
+		t.Fatal("nil secret key accepted")
 	}
 }

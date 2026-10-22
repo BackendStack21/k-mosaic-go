@@ -92,7 +92,7 @@ func TestKEMSerialization(t *testing.T) {
 			ctBytes := kem.SerializeCiphertext(&result.Ciphertext, kp.PublicKey.Params)
 
 			// Deserialize ciphertext
-			ct2, err := kem.DeserializeCiphertext(ctBytes, kp.PublicKey.Params)
+			ct2, _, err := kem.DeserializeCiphertext(ctBytes)
 			if err != nil {
 				t.Fatalf("DeserializeCiphertext failed: %v", err)
 			}
@@ -126,9 +126,8 @@ func TestKEMInvalidCiphertext(t *testing.T) {
 
 	// Tamper with ciphertext (modify first byte of proof)
 	tamperedCT := result.Ciphertext
-	if len(tamperedCT.Proof) > 0 {
-		tamperedCT.Proof[0] ^= 0xFF
-	}
+	tamperedCT.C1.V = append([]int32{}, tamperedCT.C1.V...)
+	tamperedCT.C1.V[0] ^= 1
 
 	// Decapsulate tampered ciphertext
 	rejectedSecret, err := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &tamperedCT)
@@ -257,7 +256,7 @@ func TestCLICommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Test key generation
 	t.Run("keygen", func(t *testing.T) {
@@ -507,20 +506,20 @@ func testDeterministicNIZKLevel(t *testing.T, level kmosaic.SecurityLevel, fixed
 	}
 }
 
-// TestSecurityValidation_EmptyMessage tests that empty messages are rejected.
+// TestSecurityValidation_EmptyMessage tests that an empty message encrypts and
+// decrypts (AES-GCM authenticates it like any other).
 func TestSecurityValidation_EmptyMessage(t *testing.T) {
 	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
 	if err != nil {
 		t.Fatalf("GenerateKeyPair failed: %v", err)
 	}
-
-	// Empty message should be rejected
-	_, err = kem.Encrypt(&kp.PublicKey, []byte{})
-	if err == nil {
-		t.Fatal("Expected error for empty message encryption")
+	em, err := kem.Encrypt(&kp.PublicKey, []byte{})
+	if err != nil {
+		t.Fatalf("Encrypt of empty message failed: %v", err)
 	}
-	if err.Error() != "plaintext cannot be empty" {
-		t.Errorf("Wrong error message: expected 'plaintext cannot be empty', got '%v'", err)
+	dec, err := kem.Decrypt(&kp.SecretKey, &kp.PublicKey, em)
+	if err != nil || len(dec) != 0 {
+		t.Fatalf("Decrypt of empty message failed: %v (%d bytes)", err, len(dec))
 	}
 }
 
@@ -626,9 +625,8 @@ func TestSecurityValidation_ConstantTimeComparison(t *testing.T) {
 
 	// Invalid ciphertext should still return a secret (implicit reject)
 	invalidCT := encResult.Ciphertext
-	if len(invalidCT.Proof) > 0 {
-		invalidCT.Proof[0] ^= 0xFF // Flip bits in proof
-	}
+	invalidCT.C2.V = append([]uint64{}, invalidCT.C2.V...)
+	invalidCT.C2.V[0] ^= 1
 	// Also corrupt the C1 component's U field
 	if len(invalidCT.C1.U) > 0 {
 		invalidCT.C1.U[0] ^= 1

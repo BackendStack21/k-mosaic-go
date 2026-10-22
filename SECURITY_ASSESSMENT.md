@@ -136,7 +136,7 @@ hybrid attack is taken into account.
 | "MOS_128: 128-bit post-quantum security"                                         | **False.** ~2^59 quantum core-SVP for the ciphertext instance even before the structural breaks. | §1.4 |
 | "MOS_256: 256-bit post-quantum security"                                         | **False.** ~2^142 quantum core-SVP. | §1.4 |
 | "Multi-witness signatures: Fiat-Shamir scheme proving knowledge of three entangled witnesses" | **False.** The signature proved knowledge of nothing; the verifier ignored the response. No sigma protocol existed for any of the three witnesses. | §1.2 |
-| "NIZK proof" in the KEM ciphertext                                               | **Overstated.** `GenerateNIZKProof` is a hash binding of the shares to the ciphertext hashes under a seed. It is deterministic in the ephemeral secret and is simply part of what the Fujisaki-Okamoto re-encryption compares. It proves nothing beyond what re-encryption already checks and has no zero-knowledge property to speak of. It is harmless and was left in place. | code review |
+| "NIZK proof" in the KEM ciphertext                                               | **False, and this review initially got it wrong.** Section 2 of the 2.0/3.0 editions called the proof "harmless". The 4.0 panel review (§5.1) showed that its "responses" are the shares XOR-masked with a hash of the challenge, which is itself the first field of the proof, so anyone could unmask both shares and recover the ephemeral secret from the ciphertext alone. It has been removed. | §5.1 |
 | CCA security via Fujisaki-Okamoto with implicit rejection                        | **Partially true.** The FO structure (derandomize on `H(m, binding)`, re-encrypt, constant-time select against a rejection value) is reasonable. It cannot help when the underlying PKE is not even CPA-secure, as was the case. | `kem.Decapsulate` |
 | "Uses constant-time operations" / side-channel resistance                        | **Overstated.** Comparisons use `crypto/subtle`, and decoding avoids branches, but Go gives no constant-time guarantees for integer multiplication, map lookups in `sampleSparseVector`, or garbage-collected memory. `Zeroize` is best-effort because the GC may have copied the data. Treat the library as not side-channel hardened. | code review |
 | "NOT formally verified by academic peer review" (warning in README)              | **True, and understated.** The warning should say the construction was found broken by elementary attacks, not merely "unverified". | this document |
@@ -312,3 +312,63 @@ force the attacker to break an additional, independent problem.
 - Cost is real: a composite signature public key is 1.2–2 MB and a signature
   21–56 KB, because unstructured lattices and three-way signatures are not
   small.
+
+---
+
+## 5. Version 4.0: expert-panel review and fixes
+
+A panel of five independent reviewers examined the 3.0 code (lattice
+components, code-based component, UOV and SLH-DSA, the composite layer and
+CLI, and whole-library profiling). Every finding was either fixed or is
+recorded below. The attack programs for the critical findings were run and
+confirmed before fixing.
+
+### 5.1 Security findings fixed
+
+| Severity | Finding | Fix |
+| --- | --- | --- |
+| **Critical** | The share-binding "proof" carried in every 3.0 ciphertext leaked both KEM shares: responses were `share ⊕ SHA3(H(mask-domain, challenge))` and the challenge was public. The shared secret was recoverable from public data; confirmed with a 40-line program. (Also a correction of this document's earlier "harmless" verdict.) | Proof removed. Ciphertexts are exactly the two component ciphertexts; the Fujisaki-Okamoto re-encryption check is the only binding. Regression test `TestClaim_CiphertextCarriesNoShareInformation`. |
+| **High** | A Reed-Solomon decoding failure in the code component returned `nil` and `Decapsulate` rejected early, a 3x timing difference. This is the published decryption-failure oracle against HQC and recovers the secret `y`. | `qcsd.Decrypt` always returns K bytes plus a constant-time `ok` flag; `Decapsulate` always re-encrypts and folds `ok` into the constant-time selection. |
+| **High** | The Reed-Solomon decoder's running time grew with the number of errors (6 µs at 0 errors, 54 µs at 29), the known timing attack on HQC. | Constant-time decoder: fixed-iteration Berlekamp-Massey with masked updates, Chien/Forney at every position, branch-free GF(2^8) multiplication. Measured 42.0–42.4 µs for 0 to 90 errors. |
+| **High** | `Decapsulate` never checked that the supplied public key belonged to the secret key: a key-mismatch oracle (attacker-chosen `T + Δ`) recovers the SLSS key. | The secret key's stored public-key hash is checked in constant time; mismatch returns `ErrKeyMismatch`. |
+| **High** | Every length-prefix reader converted a `uint32` to `int` before bounds checking and panicked on 32-bit platforms (confirmed on GOARCH=386). | New `internal/wire` reader compares lengths as 64-bit values; parsers are exact-length; CI runs the parser tests under GOARCH=386. |
+| **Medium** | Secret-dependent hardware division (`x % q` with a runtime `q`) in SLSS decryption and lattice signing: the KyberSlash pattern. | Moduli are compile-time constants with multiply-shift reductions and branch-free corrections; `Decompose` uses the FIPS 204 constant arithmetic. No runtime division remains on secret data. |
+| **Medium** | Composite signatures were malleable: components from two signatures on the same message could be recombined (EUF-CMA but not SUF-CMA). | A 32-byte per-signature nonce is part of the signed digest; components of different signatures never share a digest. Regression test `TestClaim_SignatureComponentsCannotBeRecombined`. |
+| **Medium** | Oversized trailing data in a ciphertext reached a hashing helper that panics above 100 MB; `Decapsulate(sk, pk, nil)` panicked. | Exact-length parsing with no trailer; nil checks on every entry point. |
+| **Medium** | Secret-key parsing accepted any seed length (an empty seed made the implicit-rejection value public). | Seeds are exactly 32 bytes everywhere; the rejection value is a PRF under a key derived from the seed. |
+| **Medium** | The SLSS error sampler used floating-point Box-Muller: not constant-time and not guaranteed bit-identical across architectures, which the FO re-encryption requires. | Integer centered-binomial sampler (η = 20, σ ≈ 3.16). Known-answer digests pin the outputs. |
+| **Medium** (latent) | UOV derived keys from the whole seed but stored only 32 bytes, so a longer seed broke the secret-key round trip. | Seeds must be exactly 32 bytes. |
+| Low | Deserializers in UOV and SLH-DSA did not validate parameters before slicing; lattice validation accepted parameter sets the code could not handle (τ > 64, other γ2 values). | Every deserializer validates parameters first; lattice parameters are restricted to the two supported shapes. |
+| Low | `SecureRandomBytes` used `Read` rather than `io.ReadFull`. | Fixed. |
+| Low | Secret intermediates (masks, `w`, low bits, vinegar, elimination state) were not zeroized. | Zeroized on every path. |
+
+### 5.2 Performance changes (same 4-core container, loaded by concurrent work; ratios are more reliable than absolutes)
+
+| Operation | 3.0 | 4.0 | Main change |
+| --- | --- | --- | --- |
+| KEM Encapsulate (MOS-128) | 3.9 ms | 0.6 ms | fused window multiply in the ring (6x on the dominant product), no per-rotation allocation |
+| KEM Decapsulate (MOS-128) | 5.7 ms | 1.0 ms | as above; ciphertext serialized once |
+| KEM DeserializePK (MOS-128) | 12 ms | 8 ms | 16-bit rejection sampling of A, parallel component parsing |
+| Sign (MOS-128 / 256) | 75 / 229 ms | 19 / 53 ms | SLH-DSA: one hasher per worker, in-place chains, all leaves and FORS trees in parallel (5x); lattice: 4-way batched passes over A, sparse challenge products |
+| Verify (MOS-128 / 256) | 20 / 29 ms | 3.1 / 4.8 ms | public-key hashes cached in the key structs instead of re-serializing and hashing 1–2 MB per call; UOV monomial-once evaluation |
+| Sign KeyGen (MOS-256) | 591 ms | 238 ms | UOV nibble-table products (5.7x on its key generation) |
+| Signature public key | 1.22 / 2.02 MB | 535 KB / 1.10 MB | FIPS 204 Power2Round (10-bit `t1`) with hints |
+| KEM ciphertext | 18.8 / 20.3 KB | 15.6 / 16.2 KB | SLSS coefficients compressed to 11 and 5 bits (noise σ ≈ 130 against a 3072 threshold, more than 22σ) |
+
+The SLH-DSA output remains byte-identical to the implementation that was
+verified against an independent FIPS 205 reference; the only intentional
+change is the FIPS 205 "pure" domain prefix (context string `kmosaic-v4`).
+
+### 5.3 Still open
+
+- **Cache-timing side channels.** The code component's fused multiply reads a
+  window whose position depends on the secret support of `y`; SLSS key
+  generation and encryption gather matrix rows at secret positions; UOV
+  signing uses lookup tables indexed by secret values and a branching pivot
+  search. These are documented in the package comments. Closing them needs a
+  dense constant-time ring multiply (as HQC's reference did) and bitsliced
+  field arithmetic for UOV.
+- **No SIMD.** Lattice key generation is a 500M–940M multiply-add product
+  with no vector kernel in pure Go; only an assembly kernel would change it.
+- **Parameter estimates** for SLSS remain this repository's own (§3.5).
+- **External review.** None yet.

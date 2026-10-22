@@ -19,17 +19,14 @@ func TestKEM_Failures(t *testing.T) {
 		ct.C1.V = append([]int32{}, ct.C1.V...)
 		ct.C2.U = append([]uint64{}, ct.C2.U...)
 		ct.C2.V = append([]uint64{}, ct.C2.V...)
-		ct.Proof = append([]byte{}, ct.Proof...)
 		f(&ct)
 		return &ct
 	}
 	cases := map[string]*kmosaic.MOSAICCiphertext{
-		"SLSS u":   mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C1.U[0] ^= 1 }),
-		"SLSS v":   mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C1.V[3] ^= 1 }),
-		"code u":   mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C2.U[5] ^= 1 }),
-		"code v":   mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C2.V[7] ^= 1 << 9 }),
-		"proof":    mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.Proof[0] ^= 1 }),
-		"no proof": mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.Proof = nil }),
+		"SLSS u": mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C1.U[0] ^= 1 }),
+		"SLSS v": mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C1.V[3] ^= 1 }),
+		"code u": mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C2.U[5] ^= 1 }),
+		"code v": mutate(func(ct *kmosaic.MOSAICCiphertext) { ct.C2.V[7] ^= 1 << 9 }),
 	}
 	for name, ct := range cases {
 		ss, err := Decapsulate(&kp.SecretKey, &kp.PublicKey, ct)
@@ -177,9 +174,12 @@ func TestSerializeDeserializeCiphertext(t *testing.T) {
 			params := kp.PublicKey.Params
 			res, _ := Encapsulate(&kp.PublicKey)
 			serialized := SerializeCiphertext(&res.Ciphertext, params)
-			deserialized, err := DeserializeCiphertext(serialized, params)
+			deserialized, ctParams, err := DeserializeCiphertext(serialized)
 			if err != nil {
 				t.Fatalf("DeserializeCiphertext failed: %v", err)
+			}
+			if ctParams.Level != level {
+				t.Fatalf("ciphertext level %s, want %s", ctParams.Level, level)
 			}
 			if !bytes.Equal(serialized, SerializeCiphertext(deserialized, params)) {
 				t.Error("Round-trip serialization of ciphertext failed")
@@ -202,7 +202,7 @@ func TestSerializeDeserializeEncryptedMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	serialized := SerializeEncryptedMessage(encrypted, params)
-	deserialized, err := DeserializeEncryptedMessage(serialized, params)
+	deserialized, _, err := DeserializeEncryptedMessage(serialized)
 	if err != nil {
 		t.Fatalf("DeserializeEncryptedMessage failed: %v", err)
 	}
@@ -216,23 +216,25 @@ func TestSerializeDeserializeEncryptedMessage(t *testing.T) {
 }
 
 func TestDeserializeErrors(t *testing.T) {
-	params, _ := core.GetParams(kmosaic.MOS_128)
 	if _, err := DeserializePublicKey([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializePublicKey should fail with invalid data")
 	}
 	if _, err := DeserializeSecretKey([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializeSecretKey should fail with invalid data")
 	}
-	if _, err := DeserializeCiphertext([]byte{1, 2, 3}, params); err == nil {
+	if _, _, err := DeserializeCiphertext([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializeCiphertext should fail with invalid data")
 	}
-	if _, err := DeserializeEncryptedMessage([]byte{1, 2, 3}, params); err == nil {
+	if _, _, err := DeserializeEncryptedMessage([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializeEncryptedMessage should fail with invalid data")
 	}
-	badData := make([]byte, 100)
-	badData[0] = 99
-	if _, err := DeserializePublicKey(badData); err == nil {
+	// Valid header with an unknown level byte
+	badData := []byte{'k', 'M', 'O', 'S', 4, 1, 9, 0}
+	if _, err := DeserializePublicKey(append(badData, make([]byte, 100)...)); err == nil {
 		t.Error("DeserializePublicKey should fail with invalid security level")
+	}
+	if _, err := DeserializeSecretKey(append([]byte{'k', 'M', 'O', 'S', 4, 2, 1, 0}, 0xff, 0xff, 0xff, 0xff, 1, 2, 3)); err == nil {
+		t.Error("huge length prefix accepted")
 	}
 }
 

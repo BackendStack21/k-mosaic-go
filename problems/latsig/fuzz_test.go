@@ -1,53 +1,75 @@
 package latsig
 
 import (
+	"bytes"
 	"testing"
+
+	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/core"
 )
 
-// FuzzDeserializePublicKey tests public key deserialization with random inputs
+// FuzzDeserializePublicKey checks that parsing never panics and that every
+// accepted encoding is canonical (re-serializes to the same bytes).
 func FuzzDeserializePublicKey(f *testing.F) {
-	// Add seed corpus
 	f.Add([]byte{})
 	f.Add([]byte{0})
 	f.Add([]byte{0, 0, 0, 0})
-	f.Add([]byte{0xff, 0xff, 0xff, 0xff}) // Max uint32
-	f.Add(make([]byte, 16))
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff}) // max uint32 length prefix
+	f.Add([]byte{7, 0, 0, 0, 'M', 'O', 'S', '-', '1', '2', '8'})
 	f.Add(make([]byte, 100))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Should not panic, may return error
-		_, _ = DeserializePublicKey(data)
+		pk, err := DeserializePublicKey(data)
+		if err == nil && !bytes.Equal(SerializePublicKey(pk), data) {
+			t.Fatal("accepted a non-canonical public key encoding")
+		}
 	})
 }
 
-// FuzzDeserializeSecretKey tests secret key deserialization with random inputs
+// FuzzDeserializeSecretKey checks that parsing never panics and that every
+// accepted encoding is canonical.
 func FuzzDeserializeSecretKey(f *testing.F) {
-	// Add seed corpus
 	f.Add([]byte{})
 	f.Add([]byte{0})
 	f.Add([]byte{0, 0, 0, 0})
-	f.Add([]byte{0xff, 0xff, 0xff, 0xff}) // Max uint32
-	f.Add(make([]byte, 16))
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff}) // max uint32 length prefix
+	f.Add([]byte{7, 0, 0, 0, 'M', 'O', 'S', '-', '2', '5', '6'})
 	f.Add(make([]byte, 100))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Should not panic, may return error
-		_, _ = DeserializeSecretKey(data)
+		sk, err := DeserializeSecretKey(data)
+		if err == nil && !bytes.Equal(SerializeSecretKey(sk), data) {
+			t.Fatal("accepted a non-canonical secret key encoding")
+		}
 	})
 }
 
-// FuzzDeserializeSignature tests signature deserialization with random inputs
+// FuzzDeserializeSignature checks that parsing never panics and that every
+// accepted encoding is canonical, at both levels.
 func FuzzDeserializeSignature(f *testing.F) {
-	// Add seed corpus
+	for _, params := range []kmosaic.LatticeSignParams{core.Lattice128Params, core.Lattice256Params} {
+		f.Add(SerializeSignature(&kmosaic.LatticeSignature{
+			Challenge: make([]byte, params.CTildeSize),
+			Z:         make([]int32, params.N),
+			Hint:      []uint16{1, 2, 300, uint16(params.M - 1)},
+		}, params))
+	}
 	f.Add([]byte{})
-	f.Add([]byte{0})
-	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}) // Minimum valid length
-	f.Add([]byte{0xff, 0xff, 0xff, 0xff})             // Max uint32
-	f.Add(make([]byte, 16))
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
 	f.Add(make([]byte, 100))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Should not panic, may return error
-		_, _ = DeserializeSignature(data)
+		for _, params := range []kmosaic.LatticeSignParams{core.Lattice128Params, core.Lattice256Params} {
+			sig, err := DeserializeSignature(data, params)
+			if err != nil {
+				continue
+			}
+			if !bytes.Equal(SerializeSignature(sig, params), data) {
+				t.Fatal("accepted a non-canonical signature encoding")
+			}
+			if !checkHints(sig.Hint, params) || normU(sig.Z) >= uint32(params.Gamma1-params.Beta) {
+				t.Fatal("parsed an out-of-range signature")
+			}
+		}
 	})
 }

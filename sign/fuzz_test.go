@@ -2,9 +2,6 @@ package sign
 
 import (
 	"testing"
-
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
 )
 
 func FuzzDeserializePublicKey(f *testing.F) {
@@ -26,11 +23,11 @@ func FuzzDeserializeSecretKey(f *testing.F) {
 }
 
 func FuzzDeserializeSignature(f *testing.F) {
-	params, _ := core.GetSignParams(kmosaic.MOS_128)
 	f.Add([]byte{})
 	f.Add([]byte{0, 0, 0, 0})
 	f.Add(make([]byte, 100))
+	f.Add([]byte{'k', 'M', 'O', 'S', 4, 7, 1, 0, 0xff, 0xff, 0xff, 0xff})
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _ = DeserializeSignature(data, params)
+		_, _, _ = DeserializeSignature(data)
 	})
 }

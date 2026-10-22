@@ -17,13 +17,13 @@ A Go implementation of the kMOSAIC post-quantum cryptographic library.
 outside this repository. DO NOT use in production systems protecting sensitive
 data.**
 
-Versions before 2.0.0 (and the TypeScript implementation) are broken: the KEM
-shared secret could be recovered from the public key and ciphertext alone, and
-signatures could be forged by anyone holding the public key. See
-[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the reproduced attacks, a
-claim-by-claim review of the original design, and how 3.0.0 implements the
-original claims with problems that are actually hard. Keys, ciphertexts and
-signatures from earlier versions must be discarded.
+Versions before 4.0.0 are broken. In 1.x the KEM shared secret could be
+recovered from the public key and ciphertext alone and signatures could be
+forged by anyone holding the public key; 3.0.0 reintroduced a ciphertext field
+that leaked the KEM shares. See [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md)
+for the reproduced attacks, a claim-by-claim review of the original design, the
+3.0 redesign and the 4.0 expert-panel review. Keys, ciphertexts and signatures
+from earlier versions must be discarded; 4.0.0 refuses to parse them.
 
 ## Overview
 
@@ -82,15 +82,15 @@ Use the `k-mosaic-cli` for common tasks such as key generation, encryption/decry
 # Install the CLI
 go install github.com/BackendStack21/k-mosaic-go/cmd/k-mosaic-cli@latest
 
-# Generate keys, encrypt, decrypt
+# Generate keys (writes keys.json with both keys and keys.json.pub with the public key), encrypt, decrypt
 k-mosaic-cli kem keygen -l 128 -o keys.json
-k-mosaic-cli kem encrypt -pk keys.json -m "Secret message" -o enc.json
-k-mosaic-cli kem decrypt -sk keys.json -pk keys.json -ct enc.json
+k-mosaic-cli kem encrypt -pk keys.json.pub -m "Secret message" -o enc.json
+k-mosaic-cli kem decrypt -sk keys.json -pk keys.json.pub -ct enc.json
 
-# Generate keys, sign, verify
+# Generate keys, sign, verify (the message must be given explicitly to verify)
 k-mosaic-cli sign keygen -l 128 -o sign.json
-k-mosaic-cli sign sign -sk sign.json -pk sign.json -m "Document" -o sig.json
-k-mosaic-cli sign verify -pk sign.json -sig sig.json
+k-mosaic-cli sign sign -sk sign.json -pk sign.json.pub -m "Document" -o sig.json
+k-mosaic-cli sign verify -pk sign.json.pub -sig sig.json -m "Document"
 ```
 
 ### Full Documentation
@@ -120,9 +120,9 @@ import (
 func main() {
     // Key Encapsulation
     kemKeyPair, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
-    ciphertext, senderSecret, _ := kem.Encapsulate(&kemKeyPair.PublicKey)
-    recipientSecret, _ := kem.Decapsulate(&kemKeyPair.SecretKey, &kemKeyPair.PublicKey, ciphertext)
-    fmt.Printf("Shared secrets match: %v\n", bytes.Equal(senderSecret, recipientSecret))
+    enc, _ := kem.Encapsulate(&kemKeyPair.PublicKey)
+    recipientSecret, _ := kem.Decapsulate(&kemKeyPair.SecretKey, &kemKeyPair.PublicKey, &enc.Ciphertext)
+    fmt.Printf("Shared secrets match: %v\n", bytes.Equal(enc.SharedSecret, recipientSecret))
 
     // Digital Signatures
     signKeyPair, _ := sign.GenerateKeyPair(kmosaic.MOS_128)
@@ -133,28 +133,43 @@ func main() {
 }
 ```
 
-## Performance and sizes (3.0.0, 4-core x86-64 container)
+## Performance and sizes (4.0.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
 
-| Operation       | MOS_128 | MOS_256 |
-| --------------- | ------- | ------- |
-| KEM KeyGen      | 50 ms   | 95 ms   |
-| KEM Encapsulate | 1 ms    | 2 ms    |
-| KEM Decapsulate | 2 ms    | 3 ms    |
-| Sign KeyGen     | 200 ms  | 470 ms  |
-| Sign            | 70 ms   | 160 ms  |
-| Verify          | 20 ms   | 30 ms   |
+| Operation            | MOS_128 | MOS_256 |
+| -------------------- | ------- | ------- |
+| KEM KeyGen           | 23 ms   | 43 ms   |
+| KEM Encapsulate      | 0.6 ms  | 1.0 ms  |
+| KEM Decapsulate      | 1.0 ms  | 1.7 ms  |
+| KEM DeserializePK    | 8 ms    | 13 ms   |
+| Sign KeyGen          | 133 ms  | 238 ms  |
+| Sign                 | 19 ms   | 53 ms   |
+| Verify               | 3.1 ms  | 4.8 ms  |
+| Sign DeserializePK   | 22 ms   | 42 ms   |
 
 | Object               | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
-| KEM public key       | 401 KB  | 597 KB  |
-| KEM ciphertext       | 18.8 KB | 20.3 KB |
-| Signature public key | 1.22 MB | 2.02 MB |
-| Signature            | 21.1 KB | 55.6 KB |
+| KEM public key       | 351 KB  | 523 KB  |
+| KEM secret key       | 49 KB   | 74 KB   |
+| KEM ciphertext       | 15.6 KB | 16.2 KB |
+| Signature public key | 535 KB  | 1.10 MB |
+| Signature secret key | 1.0 MB  | 1.2 MB  |
+| Signature            | 20.6 KB | 54.8 KB |
 
 Keys are large because the lattice components are unstructured (no polynomial
-rings) and the signature carries three component signatures. The figures in
+rings); the KEM ciphertext is dominated by the 14.4 KB HQC component and the
+signature by the SLH-DSA component (17 KB / 50 KB). The figures in
 [BenchmarkReport.md](BenchmarkReport.md) describe the broken 1.x design and
 are kept for the record only.
+
+## Formats and API (4.0.0)
+
+Every serialized object starts with an 8-byte header (`"kMOS"`, format
+version 4, object type, parameter level), so `Deserialize*` functions take no
+parameters and reject anything from another version. Length prefixes are
+checked as 64-bit values (safe on 32-bit platforms) and every parser requires
+an exact length. Errors wrap the sentinels in `errors.go`
+(`ErrInvalidKey`, `ErrInvalidCiphertext`, `ErrInvalidSignature`,
+`ErrKeyMismatch`, `ErrAuthentication`, `ErrInvalidParams`).
 
 ## API Reference
 
@@ -167,10 +182,10 @@ import "github.com/BackendStack21/k-mosaic-go/kem"
 kp, err := kem.GenerateKeyPair(level)
 
 // Encapsulate (create ciphertext and shared secret)
-ciphertext, sharedSecret, err := kem.Encapsulate(&publicKey)
+result, err := kem.Encapsulate(&publicKey)      // result.Ciphertext, result.SharedSecret
 
-// Decapsulate (recover shared secret)
-sharedSecret, err := kem.Decapsulate(&secretKey, &publicKey, ciphertext)
+// Decapsulate (recover shared secret); the public key must belong to the secret key
+sharedSecret, err := kem.Decapsulate(&secretKey, &publicKey, &result.Ciphertext)
 
 // Encrypt a message (hybrid: KEM + AES-GCM for symmetric payload encryption)
 ciphertext, err := kem.Encrypt(&publicKey, plaintext)

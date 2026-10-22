@@ -146,35 +146,6 @@ func TestEntanglement_SecretShare(t *testing.T) {
 	}
 }
 
-func TestEntanglement_Commitment(t *testing.T) {
-	data := []byte("data")
-	comm, err := entanglement.CreateCommitment(data)
-	if err != nil {
-		t.Fatalf("CreateCommitment failed: %v", err)
-	}
-
-	if !entanglement.VerifyCommitment(data, comm.Commitment, comm.Opening) {
-		t.Error("VerifyCommitment failed")
-	}
-
-	// Test wrong data
-	if entanglement.VerifyCommitment([]byte("wrong"), comm.Commitment, comm.Opening) {
-		t.Error("VerifyCommitment passed with wrong data")
-	}
-
-	// Test wrong opening
-	wrongOpening := make([]byte, len(comm.Opening))
-	copy(wrongOpening, comm.Opening)
-	wrongOpening[0] ^= 1
-	if entanglement.VerifyCommitment(data, comm.Commitment, wrongOpening) {
-		t.Error("VerifyCommitment passed with wrong opening")
-	}
-}
-
-// =============================================================================
-// KEM Tests
-// =============================================================================
-
 func TestKEM_Failures(t *testing.T) {
 	kp, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
 	res, _ := kem.Encapsulate(&kp.PublicKey)
@@ -193,7 +164,8 @@ func TestKEM_Failures(t *testing.T) {
 
 	// Test modified proof
 	badCT = res.Ciphertext
-	badCT.Proof[0] ^= 1
+	badCT.C2.U = append([]uint64{}, badCT.C2.U...)
+	badCT.C2.U[0] ^= 1
 	ss, err = kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &badCT)
 	if err != nil {
 		t.Fatalf("Decapsulate failed: %v", err)

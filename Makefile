@@ -61,7 +61,7 @@ coverage-html: coverage
 # Run linter (requires golangci-lint)
 lint:
 	@echo "Running linter..."
-	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0)
 	golangci-lint run ./...
 
 # Format code
@@ -118,8 +118,13 @@ doc:
 check: fmt vet test
 	@echo "All checks passed!"
 
+# Run the parser tests on a 32-bit target
+test-386:
+	@echo "Running parser tests with GOARCH=386..."
+	GOARCH=386 go test ./internal/wire/ ./kem/ ./sign/ -run 'Deserialize|Truncated|Header|Huge'
+
 # CI pipeline simulation
-ci: deps fmt vet test-race coverage
+ci: deps fmt vet test-race test-386 coverage
 	@echo "CI pipeline completed!"
 
 # Help

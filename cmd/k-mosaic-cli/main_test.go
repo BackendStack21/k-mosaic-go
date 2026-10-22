@@ -202,55 +202,6 @@ func TestKEMEncapsulateDecapsulate(t *testing.T) {
 	}
 }
 
-func TestKEMEncapsulateDeterministic(t *testing.T) {
-	dir := t.TempDir()
-	kpFile := filepath.Join(dir, "kem_kp.json")
-
-	// Keygen
-	_, stderr, err := runCLI(t, 20*time.Second, "kem", "keygen", "--level", "128", "--output", kpFile)
-	if err != nil {
-		t.Fatalf("kem keygen failed: %v, stderr: %s", err, stderr)
-	}
-
-	// Generate ephemeral secret (32 bytes = 64 hex chars)
-	ephemeralSecret := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-	// Encapsulate deterministic
-	encapOut, stderr, err := runCLI(t, 20*time.Second, "kem", "encapsulate-deterministic",
-		"--public-key", kpFile, "--ephemeral-secret", ephemeralSecret)
-	if err != nil {
-		t.Fatalf("kem encapsulate-deterministic failed: %v, stderr: %s", err, stderr)
-	}
-
-	var encap encapsulationExport
-	if err := json.Unmarshal([]byte(encapOut), &encap); err != nil {
-		t.Fatalf("unable to parse deterministic encapsulation as json: %v, out: %s", err, encapOut)
-	}
-	if encap.Ciphertext == "" || encap.SharedSecret == "" {
-		t.Fatalf("deterministic encapsulation missing required fields: %v", encap)
-	}
-
-	// Second run with same ephemeral secret should produce same result
-	encapOut2, stderr, err := runCLI(t, 20*time.Second, "kem", "encapsulate-deterministic",
-		"--public-key", kpFile, "--ephemeral-secret", ephemeralSecret)
-	if err != nil {
-		t.Fatalf("second kem encapsulate-deterministic failed: %v, stderr: %s", err, stderr)
-	}
-
-	var encap2 encapsulationExport
-	if err := json.Unmarshal([]byte(encapOut2), &encap2); err != nil {
-		t.Fatalf("unable to parse second deterministic encapsulation as json: %v, out: %s", err, encapOut2)
-	}
-
-	if encap.SharedSecret != encap2.SharedSecret {
-		t.Fatalf("deterministic encapsulation not reproducible: first=%s, second=%s", encap.SharedSecret, encap2.SharedSecret)
-	}
-}
-
-// ============================================================================
-// KEM SLSS Debug and PK-Inspect Tests
-// ============================================================================
-
 func TestKEMPKInspect(t *testing.T) {
 	dir := t.TempDir()
 	kpFile := filepath.Join(dir, "kem_kp.json")
@@ -273,7 +224,7 @@ func TestKEMPKInspect(t *testing.T) {
 	}
 
 	// Verify expected inspection fields exist
-	expectedFields := []string{"embedded_binding", "computed_binding", "slss_hash", "code_hash", "binding_valid"}
+	expectedFields := []string{"level", "format_version", "embedded_binding", "computed_binding", "slss_hash", "code_hash", "binding_valid"}
 	for _, field := range expectedFields {
 		if _, ok := inspectInfo[field]; !ok {
 			t.Fatalf("pk-inspect output missing field '%s': %v", field, inspectInfo)
@@ -328,27 +279,83 @@ func TestOutputFormatBase64(t *testing.T) {
 	}
 }
 
-func TestOutputFormatJSON(t *testing.T) {
-	// Keygen with json format (should be nested JSON structure)
-	stdout, stderr, err := runCLI(t, 20*time.Second, "kem", "keygen", "--level", "128", "--format", "json")
-	if err != nil {
-		t.Fatalf("kem keygen with json format failed: %v, stderr: %s", err, stderr)
-	}
-
-	var kp kepExport
-	if err := json.Unmarshal([]byte(stdout), &kp); err != nil {
-		t.Fatalf("unable to parse keygen output as json: %v, out: %s", err, stdout)
-	}
-
-	// JSON format should still be decodable
-	if kp.PublicKey == "" || kp.SecretKey == "" {
-		t.Fatalf("keygen with json format missing keys: %v", kp)
+func TestOutputFormatJSONRejected(t *testing.T) {
+	// "json" is not an encoding of binary fields; it must be rejected (exit code 2).
+	_, _, err := runCLI(t, 20*time.Second, "kem", "keygen", "--level", "128", "--format", "json")
+	if err == nil {
+		t.Fatal("--format json should be rejected")
 	}
 }
 
-// ============================================================================
-// Flag Behavior Tests (Timing, Verbose)
-// ============================================================================
+func TestKeygenWritesPublicCompanionFile(t *testing.T) {
+	dir := t.TempDir()
+	kpFile := filepath.Join(dir, "keys.json")
+	if _, out, err := runCLI(t, 30*time.Second, "kem", "keygen", "--level", "128", "--output", kpFile); err != nil {
+		t.Fatalf("keygen failed: %v, out: %s", err, out)
+	}
+	pubData, err := os.ReadFile(kpFile + ".pub")
+	if err != nil {
+		t.Fatalf("public companion file missing: %v", err)
+	}
+	var pub kepExport
+	if err := json.Unmarshal(pubData, &pub); err != nil {
+		t.Fatal(err)
+	}
+	if pub.PublicKey == "" || pub.SecretKey != "" {
+		t.Fatalf("companion file must hold only the public key: %+v", pub)
+	}
+	// The companion file must be usable for encryption and the full file for decryption.
+	encFile := filepath.Join(dir, "enc.json")
+	if _, out, err := runCLI(t, 30*time.Second, "kem", "encrypt", "--public-key", kpFile+".pub", "--message", "pub file", "--output", encFile); err != nil {
+		t.Fatalf("encrypt with .pub failed: %v, out: %s", err, out)
+	}
+	stdout, out, err := runCLI(t, 30*time.Second, "kem", "decrypt", "--secret-key", kpFile, "--public-key", kpFile+".pub", "--ciphertext", encFile)
+	if err != nil || stdout != "pub file" {
+		t.Fatalf("decrypt failed: %v, out: %s", err, out)
+	}
+}
+
+func TestFlagValuesAreNotFlags(t *testing.T) {
+	dir := t.TempDir()
+	kpFile := filepath.Join(dir, "sig.json")
+	if _, out, err := runCLI(t, 30*time.Second, "sign", "keygen", "--output", kpFile); err != nil {
+		t.Fatalf("keygen failed: %v, out: %s", err, out)
+	}
+	// "-v" here is the message, not the verbose flag; verbose output would land on stderr (merged into out).
+	stdout, _, err := runCLI(t, 30*time.Second, "sign", "sign", "--secret-key", kpFile, "--message", "-v")
+	if err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	if strings.Contains(stdout, "Signature successful") || strings.Contains(stdout, "signature size") {
+		t.Fatalf("message value was parsed as the verbose flag: %s", stdout)
+	}
+}
+
+func TestVerifyRequiresExplicitMessage(t *testing.T) {
+	dir := t.TempDir()
+	kpFile := filepath.Join(dir, "sig.json")
+	sigFile := filepath.Join(dir, "signature.json")
+	if _, out, err := runCLI(t, 30*time.Second, "sign", "keygen", "--output", kpFile); err != nil {
+		t.Fatalf("keygen failed: %v, out: %s", err, out)
+	}
+	if _, out, err := runCLI(t, 30*time.Second, "sign", "sign", "--secret-key", kpFile, "--message", "hello", "--output", sigFile); err != nil {
+		t.Fatalf("sign failed: %v, out: %s", err, out)
+	}
+	if _, _, err := runCLI(t, 30*time.Second, "sign", "verify", "--public-key", kpFile+".pub", "--signature", sigFile); err == nil {
+		t.Fatal("verify without a message must fail")
+	}
+	if _, out, err := runCLI(t, 30*time.Second, "sign", "verify", "--public-key", kpFile+".pub", "--signature", sigFile, "--message", "hello"); err != nil {
+		t.Fatalf("verify failed: %v, out: %s", err, out)
+	}
+	// Wrong message: exit code 1 (invalid), JSON with valid:false.
+	stdout, _, err := runCLI(t, 30*time.Second, "sign", "verify", "--public-key", kpFile+".pub", "--signature", sigFile, "--message", "other")
+	if err == nil || !strings.Contains(stdout, `"valid": false`) {
+		t.Fatalf("expected invalid signature result, err=%v out=%s", err, stdout)
+	}
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit code 1 for an invalid signature, got %v", err)
+	}
+}
 
 func TestTimingFlag(t *testing.T) {
 	// Keygen with timing flag - timing output is mixed in stdout
@@ -834,7 +841,7 @@ func TestOutputFormatHexRoundTrip(t *testing.T) {
 	if _, out, err := runCLI(t, 30*time.Second, "sign", "sign", "--secret-key", signKp, "--public-key", signKp, "--message", "hex round trip", "--format", "hex", "--output", sigFile); err != nil {
 		t.Fatalf("sign sign failed: %v, out: %s", err, out)
 	}
-	stdout, out, err := runCLI(t, 30*time.Second, "sign", "verify", "--public-key", signKp, "--signature", sigFile)
+	stdout, out, err := runCLI(t, 30*time.Second, "sign", "verify", "--public-key", signKp, "--signature", sigFile, "--message", "hex round trip")
 	if err != nil {
 		t.Fatalf("sign verify failed: %v, out: %s", err, out)
 	}

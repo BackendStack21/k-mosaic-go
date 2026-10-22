@@ -41,7 +41,7 @@ func TestRoundTripAllLevels(t *testing.T) {
 			tv := time.Since(st)
 			pkb := SerializePublicKey(&kp.PublicKey)
 			skb := SerializeSecretKey(&kp.SecretKey)
-			sb := SerializeSignature(sig)
+			sb := SerializeSignature(sig, kp.PublicKey.Params)
 			t.Logf("keygen=%v sign=%v verify=%v pk=%d sk=%d sig=%d", tk, ts, tv, len(pkb), len(skb), len(sb))
 
 			if Verify(&kp.PublicKey, []byte("other message"), sig) {
@@ -73,11 +73,14 @@ func TestRoundTripAllLevels(t *testing.T) {
 			if !bytes.Equal(SerializePublicKey(pk2), pkb) {
 				t.Fatal("public key round trip failed")
 			}
-			sig2, err := DeserializeSignature(sb, pk2.Params)
+			sig2, sigParams, err := DeserializeSignature(sb)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(SerializeSignature(sig2), sb) {
+			if sigParams.Level != level {
+				t.Fatalf("signature level %s, want %s", sigParams.Level, level)
+			}
+			if !bytes.Equal(SerializeSignature(sig2, sigParams), sb) {
 				t.Fatal("signature round trip failed")
 			}
 			if !Verify(pk2, msg, sig2) {
@@ -123,6 +126,9 @@ func TestDeterministicKeyGen(t *testing.T) {
 	if _, err := GenerateKeyPairFromSeed(bad, seed); err == nil {
 		t.Fatal("unknown level accepted")
 	}
+	if _, err := GenerateKeyPairFromSeed(params, make([]byte, 64)); err == nil {
+		t.Fatal("64-byte seed accepted; seeds must be exactly 32 bytes")
+	}
 }
 
 func TestKeyMismatchAndBinding(t *testing.T) {
@@ -155,26 +161,29 @@ func TestKeyMismatchAndBinding(t *testing.T) {
 }
 
 func TestDeserializeErrors(t *testing.T) {
-	params, _ := core.GetSignParams(kmosaic.MOS_128)
 	if _, err := DeserializePublicKey([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializePublicKey should fail with invalid data")
 	}
 	if _, err := DeserializeSecretKey([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializeSecretKey should fail with invalid data")
 	}
-	if _, err := DeserializeSignature([]byte{1, 2, 3}, params); err == nil {
+	if _, _, err := DeserializeSignature([]byte{1, 2, 3}); err == nil {
 		t.Error("DeserializeSignature should fail with invalid data")
 	}
 	kp, _ := GenerateKeyPair(kmosaic.MOS_128)
 	sig, _ := Sign(&kp.SecretKey, &kp.PublicKey, []byte("x"))
-	sb := SerializeSignature(sig)
-	for _, cut := range []int{3, 50, len(sb) / 2, len(sb) - 1} {
-		if _, err := DeserializeSignature(sb[:cut], params); err == nil {
+	sb := SerializeSignature(sig, kp.PublicKey.Params)
+	for _, cut := range []int{3, 8, 50, len(sb) / 2, len(sb) - 1} {
+		if _, _, err := DeserializeSignature(sb[:cut]); err == nil {
 			t.Errorf("truncated signature (%d bytes) accepted", cut)
 		}
 	}
-	if _, err := DeserializeSignature(append(sb, 0), params); err == nil {
+	if _, _, err := DeserializeSignature(append(append([]byte{}, sb...), 0)); err == nil {
 		t.Error("signature with trailing data accepted")
+	}
+	huge := append(append([]byte{}, sb[:8+NonceSize]...), 0xff, 0xff, 0xff, 0xff, 1)
+	if _, _, err := DeserializeSignature(huge); err == nil {
+		t.Error("huge length prefix accepted")
 	}
 	if Verify(nil, []byte("x"), sig) || Verify(&kp.PublicKey, []byte("x"), nil) {
 		t.Error("nil inputs verified")

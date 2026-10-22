@@ -94,9 +94,12 @@ func TestKEMEncapsulateDecapsulate(t *testing.T) {
 
 	// Decrypt shares manually with each component's secret key
 	m1 := slss.Decrypt(&result.Ciphertext.C1, kp.SecretKey.SLSS, params.SLSS)
-	m2 := qcsd.Decrypt(&result.Ciphertext.C2, kp.SecretKey.Code, params.Code)
+	m2, ok2 := qcsd.Decrypt(&result.Ciphertext.C2, kp.SecretKey.Code, params.Code)
+	if ok2 != 1 {
+		t.Fatalf("code component failed to decode")
+	}
 
-	randomness := utils.HashConcat(ephemeralSecret, kp.PublicKey.Binding)
+	randomness := utils.HashConcat(ephemeralSecret, kem.PublicKeyHash(&kp.PublicKey))
 	expectedShares, _ := entanglement.SecretShareDeterministic(ephemeralSecret, 2, randomness)
 	if !bytes.Equal(m1, expectedShares[0]) || !bytes.Equal(m2, expectedShares[1]) {
 		t.Fatalf("component decryptions do not match the shares")

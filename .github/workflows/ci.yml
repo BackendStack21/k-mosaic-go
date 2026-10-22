@@ -7,11 +7,11 @@ on:
     branches: [main, master]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [1.21]
+        go-version: ["1.24", "1.25"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,24 +21,24 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
 
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ${{ env.GOMODCACHE }}
-          key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ matrix.go-version }}-
-
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.63.4
+          version: v2.5.0
 
       - name: Run go vet
         run: go vet ./...
 
       - name: Run tests
+        run: go test ./...
+
+      - name: Run tests with the race detector
+        run: go test -race ./kem/ ./sign/ ./problems/...
+
+      - name: Build and test parsers on a 32-bit target
+        run: GOARCH=386 go test ./internal/wire/ ./kem/ ./sign/ -run 'Deserialize|Truncated|Header|Huge'
+
+      - name: Fuzz deserializers briefly
         run: |
-          go test ./... -v
+          for f in FuzzDeserializePublicKey FuzzDeserializeCiphertext FuzzDeserializeSecretKey; do go test ./kem/ -run '^$' -fuzz="^$f\$" -fuzztime=10s; done
+          for f in FuzzDeserializePublicKey FuzzDeserializeSignature FuzzDeserializeSecretKey; do go test ./sign/ -run '^$' -fuzz="^$f\$" -fuzztime=10s; done

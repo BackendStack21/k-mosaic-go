@@ -3,7 +3,7 @@ package utils
 import (
 	"sync"
 
-	"golang.org/x/crypto/sha3"
+	"crypto/sha3"
 )
 
 const (
@@ -14,7 +14,7 @@ const (
 
 var shake256Pool = sync.Pool{
 	New: func() interface{} {
-		return sha3.NewShake256()
+		return sha3.NewSHAKE256()
 	},
 }
 
@@ -22,13 +22,13 @@ var shake256Pool = sync.Pool{
 // It takes an input byte slice and generates an output of the specified length.
 // This is used for generating pseudo-random bytes from a seed.
 func Shake256(input []byte, outputLen int) []byte {
-	h := shake256Pool.Get().(sha3.ShakeHash)
+	h := shake256Pool.Get().(*sha3.SHAKE)
 	defer func() {
 		h.Reset()
 		shake256Pool.Put(h)
 	}()
 
-	h.Write(input)
+	_, _ = h.Write(input)
 	output := make([]byte, outputLen)
 	_, _ = h.Read(output)
 	return output
@@ -36,13 +36,13 @@ func Shake256(input []byte, outputLen int) []byte {
 
 // Shake256Into computes SHAKE256 and writes the output into the provided buffer.
 func Shake256Into(input []byte, output []byte) {
-	h := shake256Pool.Get().(sha3.ShakeHash)
+	h := shake256Pool.Get().(*sha3.SHAKE)
 	defer func() {
 		h.Reset()
 		shake256Pool.Put(h)
 	}()
 
-	h.Write(input)
+	_, _ = h.Write(input)
 	_, _ = h.Read(output)
 }
 
@@ -50,7 +50,7 @@ func Shake256Into(input []byte, output []byte) {
 // It returns a 32-byte hash.
 func SHA3256(input []byte) []byte {
 	h := sha3.New256()
-	h.Write(input)
+	_, _ = h.Write(input)
 	return h.Sum(nil)
 }
 
@@ -64,9 +64,9 @@ func HashWithDomain(domain string, data []byte) []byte {
 		panic("domain string must be at most 255 bytes")
 	}
 	h := sha3.New256()
-	h.Write([]byte{byte(len(domainBytes))})
-	h.Write(domainBytes)
-	h.Write(data)
+	_, _ = h.Write([]byte{byte(len(domainBytes))})
+	_, _ = h.Write(domainBytes)
+	_, _ = h.Write(data)
 	return h.Sum(nil)
 }
 
@@ -87,8 +87,8 @@ func HashConcat(inputs ...[]byte) []byte {
 		lenBytes[1] = byte(l >> 8)
 		lenBytes[2] = byte(l >> 16)
 		lenBytes[3] = byte(l >> 24)
-		h.Write(lenBytes)
-		h.Write(input)
+		_, _ = h.Write(lenBytes)
+		_, _ = h.Write(input)
 	}
 	return h.Sum(nil)
 }
@@ -102,15 +102,15 @@ func Shake256WithDomain(domain string, data []byte, outputLen int) []byte {
 		panic("domain string must be at most 255 bytes")
 	}
 
-	h := shake256Pool.Get().(sha3.ShakeHash)
+	h := shake256Pool.Get().(*sha3.SHAKE)
 	defer func() {
 		h.Reset()
 		shake256Pool.Put(h)
 	}()
 
-	h.Write([]byte{byte(len(domainBytes))})
-	h.Write(domainBytes)
-	h.Write(data)
+	_, _ = h.Write([]byte{byte(len(domainBytes))})
+	_, _ = h.Write(domainBytes)
+	_, _ = h.Write(data)
 	output := make([]byte, outputLen)
 	_, _ = h.Read(output)
 	return output
