@@ -26,7 +26,7 @@ func TestValidateCodeParams_HugeN(t *testing.T) {
 			t.Fatalf("ValidateCodeParams hung for N=%d", n)
 		}
 	}
-	if !isPrime(57637) || isPrime(57639) || !isPrime(2147483647) || isPrime(1<<30) || isPrime(math.MaxInt) {
+	if !isPrime(57637) || isPrime(57639) || !isPrime(2147483647) || isPrime(1<<30) || isPrime(math.MaxInt-1) { // MaxInt is prime on 32-bit (2^31-1)
 		t.Fatal("isPrime wrong on known values")
 	}
 }
