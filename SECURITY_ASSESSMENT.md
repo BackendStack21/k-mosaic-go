@@ -275,7 +275,7 @@ swapping in components from other keys.
 
 ### 4.3 The components and their parameter provenance
 
-- **SLSS** (`problems/slss`): §3.1, unchanged.
+- **SLSS** (`problems/slss`): §3.1 as of 3.0; 4.0 replaced the Gaussian sampler and added coefficient compression (§5).
 - **QCSD** (`problems/qcsd`): the HQC construction with the published
   **hqc-256** parameters (ring length 57637, Reed-Solomon [90,32] with
   δ = 29, RM(1,7) duplicated 5×, weights 131/149/149). It is used at both
@@ -306,9 +306,10 @@ force the attacker to break an additional, independent problem.
 - It **is not** externally reviewed. The transplant of ML-DSA to
   unstructured matrices, the SLSS parameters and the implementation itself
   are this repository's work.
-- Side channels are not addressed: GF(256) arithmetic uses lookup tables,
-  Gaussian elimination branches on secret data, and Go offers no
-  constant-time guarantees.
+- Side channels are only partly addressed (see §5.1 and §5.3 for the 4.0
+  state): the code component's field arithmetic and decoder are branch-free,
+  but UOV signing still uses lookup tables and a branching pivot search, and
+  Go offers no constant-time guarantees.
 - Cost is real: a composite signature public key is 1.2–2 MB and a signature
   21–56 KB, because unstructured lattices and three-way signatures are not
   small.

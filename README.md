@@ -68,9 +68,12 @@ KEM composes two problems and the signature three.
 
 ## Installation
 
-```bash
+```sh
 go get github.com/BackendStack21/k-mosaic-go
 ```
+
+Requires Go 1.24 or later; the library has no dependencies outside the
+standard library.
 
 ## Command-line Interface
 
@@ -78,10 +81,12 @@ Use the `k-mosaic-cli` for common tasks such as key generation, encryption/decry
 
 ### Quick Start
 
-```bash
+```sh
 # Install the CLI
 go install github.com/BackendStack21/k-mosaic-go/cmd/k-mosaic-cli@latest
+```
 
+```bash
 # Generate keys (writes keys.json with both keys and keys.json.pub with the public key), encrypt, decrypt
 k-mosaic-cli kem keygen -l 128 -o keys.json
 k-mosaic-cli kem encrypt -pk keys.json.pub -m "Secret message" -o enc.json
@@ -101,8 +106,11 @@ Key topics in CLI.md:
 
 - Installation methods (source, go install, multi-platform builds)
 - Complete encryption and signature workflows
-- Security best practices and key management
+- File formats, exit codes and key management
 - Troubleshooting and FAQ
+
+Every command in CLI.md and every program in this README is executed by
+`go test ./test/ -run TestDocumentationSnippets` against the current tree.
 
 ## Quick Start
 
@@ -173,40 +181,123 @@ an exact length. Errors wrap the sentinels in `errors.go`
 
 ## API Reference
 
+Both programs below are complete and are built and run by the test suite
+(`go test ./test/ -run TestDocumentationSnippets`).
+
 ### KEM Package
 
 ```go
-import "github.com/BackendStack21/k-mosaic-go/kem"
+package main
 
-// Generate a new key pair
-kp, err := kem.GenerateKeyPair(level)
+import (
+	"bytes"
+	"fmt"
+	"log"
 
-// Encapsulate (create ciphertext and shared secret)
-result, err := kem.Encapsulate(&publicKey)      // result.Ciphertext, result.SharedSecret
+	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/kem"
+)
 
-// Decapsulate (recover shared secret); the public key must belong to the secret key
-sharedSecret, err := kem.Decapsulate(&secretKey, &publicKey, &result.Ciphertext)
+func main() {
+	// Generate a key pair for the MOS-128 parameter set.
+	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-// Encrypt a message (hybrid: KEM + AES-GCM for symmetric payload encryption)
-ciphertext, err := kem.Encrypt(&publicKey, plaintext)
+	// Encapsulate: a ciphertext and a 32-byte shared secret for the public key.
+	result, err := kem.Encapsulate(&kp.PublicKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-// Decrypt a message (hybrid: KEM + AES-GCM for symmetric payload decryption)
-plaintext, err := kem.Decrypt(&secretKey, &publicKey, ciphertext)
+	// Decapsulate: the public key must belong to the secret key (checked).
+	shared, err := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &result.Ciphertext)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("shared secrets match:", bytes.Equal(shared, result.SharedSecret))
+
+	// Hybrid encryption: KEM + AES-256-GCM.
+	em, err := kem.Encrypt(&kp.PublicKey, []byte("hello"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	plaintext, err := kem.Decrypt(&kp.SecretKey, &kp.PublicKey, em)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("decrypted:", string(plaintext))
+
+	// Serialization. Every object carries a self-describing header, so the
+	// parsers need no parameters; ciphertext parsers return the parameters.
+	pk, err := kem.DeserializePublicKey(kem.SerializePublicKey(&kp.PublicKey))
+	if err != nil {
+		log.Fatal(err)
+	}
+	sk, err := kem.DeserializeSecretKey(kem.SerializeSecretKey(&kp.SecretKey, kp.PublicKey.Params))
+	if err != nil {
+		log.Fatal(err)
+	}
+	ct, params, err := kem.DeserializeCiphertext(kem.SerializeCiphertext(&result.Ciphertext, kp.PublicKey.Params))
+	if err != nil {
+		log.Fatal(err)
+	}
+	shared2, err := kem.Decapsulate(sk, pk, ct)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("round trip at level", params.Level, "ok:", bytes.Equal(shared2, result.SharedSecret))
+}
 ```
 
 ### Sign Package
 
 ```go
-import "github.com/BackendStack21/k-mosaic-go/sign"
+package main
 
-// Generate a signing key pair
-kp, err := sign.GenerateKeyPair(level)
+import (
+	"errors"
+	"fmt"
+	"log"
 
-// Sign a message
-signature, err := sign.Sign(&secretKey, &publicKey, message)
+	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	"github.com/BackendStack21/k-mosaic-go/sign"
+)
 
-// Verify a signature
-valid := sign.Verify(&publicKey, message, signature)
+func main() {
+	kp, err := sign.GenerateKeyPair(kmosaic.MOS_128)
+	if err != nil {
+		log.Fatal(err)
+	}
+	message := []byte("Hello, post-quantum world!")
+
+	// Sign with the secret key; the public key is optional and, when given,
+	// is checked against the hash stored in the secret key.
+	sig, err := sign.Sign(&kp.SecretKey, &kp.PublicKey, message)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("valid:", sign.Verify(&kp.PublicKey, message, sig))
+	fmt.Println("valid for another message:", sign.Verify(&kp.PublicKey, []byte("other"), sig))
+
+	// Serialization round trip.
+	pk, err := sign.DeserializePublicKey(sign.SerializePublicKey(&kp.PublicKey))
+	if err != nil {
+		log.Fatal(err)
+	}
+	sig2, params, err := sign.DeserializeSignature(sign.SerializeSignature(sig, kp.PublicKey.Params))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("level:", params.Level, "valid after round trip:", sign.Verify(pk, message, sig2))
+
+	// Errors wrap sentinels from the root package.
+	other, _ := sign.GenerateKeyPair(kmosaic.MOS_128)
+	if _, err := sign.Sign(&kp.SecretKey, &other.PublicKey, message); errors.Is(err, kmosaic.ErrKeyMismatch) {
+		fmt.Println("mismatched key pair rejected")
+	}
+}
 ```
 
 ## Security Levels
@@ -225,8 +316,7 @@ published security levels of the parameter sets the components reuse.
 
 ## Requirements
 
-- Go 1.21 or later
-- golang.org/x/crypto/sha3
+- Go 1.24 or later (standard-library `crypto/sha3`; no external modules)
 
 ## License
 
