@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/problems/qcsd"
-	"github.com/BackendStack21/k-mosaic-go/problems/slss"
-	"github.com/BackendStack21/k-mosaic-go/sign"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/kem"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/qcsd"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/slss"
+	"github.com/BackendStack21/k-mosaic-go/v4/sign"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 // These tests encode the attacks described in SECURITY_ASSESSMENT.md. Each

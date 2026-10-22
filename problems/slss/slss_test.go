@@ -7,9 +7,9 @@ import (
 	"slices"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 var levels = []kmosaic.SecurityLevel{kmosaic.MOS_128, kmosaic.MOS_256}

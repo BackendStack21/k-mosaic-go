@@ -14,7 +14,7 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 const (

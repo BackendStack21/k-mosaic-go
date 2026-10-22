@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
 )
 
 func TestGetParams(t *testing.T) {

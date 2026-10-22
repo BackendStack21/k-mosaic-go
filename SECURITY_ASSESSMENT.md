@@ -5,9 +5,9 @@ BenchmarkReport.md, and the claims they make. The document has grown with
 the code: sections 1 and 2 describe the original (1.x) design and are
 **historical**; section 3 the 2.0.0 fixes (historical); section 4 the 3.0.0
 redesign (historical, superseded by §5); section 5 the 4.0.0 review and
-fixes; **section 6 the 4.1.0 validation pass, which is the current state and
-the only section that should be read as a description of the code as it
-is.** Sizes, parameters and verdicts in §1–§4 no longer apply.
+fixes; **sections 6 (the 4.1.0 validation pass) and 7 (4.2.0) together
+describe the current code; §7 supersedes §6.3 and §6.5 where they
+differ.** Sizes, parameters and verdicts in §1–§4 no longer apply.
 
 **Verdict on the original construction:** it did not provide confidentiality
 or unforgeability at all. Of the attack programs, only the SLSS clustering
@@ -18,7 +18,7 @@ exist, so the outputs quoted in §1 are a record, not reproducible today.
 **Verdict on 4.1.0 (§6):** the KEM and signature are sound compositions of
 standard constructions at the level of the hard problems, in the classical
 random-oracle model; the implementation passed an adversarial review of
-seven independent briefs with no cryptographic break, and every defect that
+seven separately briefed internal reviews with no cryptographic break, and every defect that
 review found has been fixed. "Stronger" holds only against cryptanalysis of
 the problems, and "bug free" is not a claim anyone can verify: §6.4 lists
 what was tested, §6.5 what remains open. **Section 7 (4.2.0)** closes the
@@ -338,7 +338,7 @@ is a heuristic.
 
 ---
 
-## 5. Version 4.0: expert-panel review and fixes
+## 5. Version 4.0: internal review and fixes
 
 Five reviewers working inside this project, with separate briefs but not
 independent of its authors and not external, examined the 3.0 code (lattice
@@ -627,7 +627,7 @@ The pass found one hang, one validation hole, three CLI defects with
 security consequences, a timing channel in the one place that matters most
 (FO re-encryption), a 32-bit truncation, a vacuous test and a dozen smaller
 robustness defects in a code base that had already passed its own suite,
-a five-reviewer panel, fuzzing and the race detector. All of them are fixed
+five internal reviewers, fuzzing and the race detector. All of them are fixed
 and pinned by tests, and the review found no way to recover a key, decrypt a
 ciphertext or forge a signature. That is the strongest statement the
 evidence supports: *no known bugs, after an adversarial review whose scope
@@ -639,10 +639,11 @@ be used where a failure would matter.
 ## 7. Version 4.2.0: closing the open items
 
 4.2.0 addresses every item of §6.5 that code can address. No key, ciphertext
-or signature changed: for fixed seeds, the UOV keys and signatures and the
-code-component key generation, encryption and decryption outputs are
-bit-identical to 4.1.0 (pinned by digests in `problems/uov/ct_test.go` and
-checked against an unmodified copy for 20 seeds during development).
+or signature changed: for fixed seeds, the UOV keys and signatures are
+pinned by digests in `problems/uov/ct_test.go`, the composite KEM and
+signature keys and a deterministic encapsulation by `kem/kat_test.go` and
+`sign/kat_test.go`, and the code-component outputs were checked against an
+unmodified copy for 20 seeds during development.
 
 ### 7.1 Side channels closed
 

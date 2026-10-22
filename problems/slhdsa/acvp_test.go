@@ -8,12 +8,13 @@ import (
 	"os"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
 )
 
 // The vectors in testdata/acvp_shake_f.json.gz are a subset of NIST's ACVP
-// sample vectors for SLH-DSA (FIPS 205): key generation, signature
+// sample vectors for SLH-DSA (ACVP-Server, revision FIPS205, downloaded on
+// 2026-10-22): key generation, signature
 // generation (deterministic and hedged, internal and external "pure"
 // interface) and signature verification (valid, modified message, modified
 // R, modified FORS part, modified hypertree part) for SLH-DSA-SHAKE-128f and

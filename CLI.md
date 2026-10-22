@@ -9,15 +9,16 @@ signatures from a terminal.
 > are not readable by this version, and those versions were insecure; see
 > [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
 
-Every command in this guide is executed against the current source tree by
-`go test ./test/ -run TestDocumentationSnippets`. Blocks marked `bash` run in
-order within each section's working directory; blocks marked `sh` are
-illustrative (installation, tools that may be absent).
+Every `bash` block in this guide is executed against the current source tree
+by `go test ./test/ -run TestDocumentationSnippets`, in order, in one shared
+working directory per document (later blocks reuse files made by earlier
+ones); blocks marked `sh` are illustrative (installation, tools that may be
+absent) and are not run.
 
 ## TL;DR
 
 ```sh
-go install github.com/BackendStack21/k-mosaic-go/cmd/k-mosaic-cli@latest
+go install github.com/BackendStack21/k-mosaic-go/v4/cmd/k-mosaic-cli@latest
 ```
 
 ```bash
@@ -87,7 +88,7 @@ sudo mv k-mosaic-cli /usr/local/bin/   # or anywhere on your PATH
 ### With go install
 
 ```sh
-go install github.com/BackendStack21/k-mosaic-go/cmd/k-mosaic-cli@latest
+go install github.com/BackendStack21/k-mosaic-go/v4/cmd/k-mosaic-cli@latest
 export PATH="$PATH:$(go env GOPATH)/bin"   # add to your shell profile
 ```
 
@@ -269,26 +270,26 @@ Security Level: MOS-128
 Iterations: 2
 
 Key Encapsulation Mechanism (KEM)
-  KeyGen:      24.86ms (avg)
-  Encapsulate: 563µs (avg)
-  Decapsulate: 945µs (avg)
-  Encrypt:     447µs (avg)
-  Decrypt:     1.32ms (avg)
+  KeyGen:      64.963897ms (avg)
+  Encapsulate: 2.70019ms (avg)
+  Decapsulate: 6.771502ms (avg)
+  Encrypt:     2.560988ms (avg)
+  Decrypt:     6.610278ms (avg)
 
 Digital Signatures
-  KeyGen:      137.8ms (avg)
-  Sign:        15.9ms (avg)
-  Verify:      3.0ms (avg)
+  KeyGen:      189.768978ms (avg)
+  Sign:        19.621093ms (avg)
+  Verify:      5.455732ms (avg)
 
 Benchmark complete!
 ```
 
 ## Exit Codes
 
-| Code | Meaning                                                   |
-| ---- | --------------------------------------------------------- |
-| 0    | Success; for `sign verify`, the signature is valid        |
-| 1    | A well-formed signature that does not verify, or decryption failed authentication |
+| Code | Meaning                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------------------------- |
+| 0    | Success; for `sign verify`, the signature is valid                                                            |
+| 1    | A well-formed signature that does not verify, or decryption failed authentication                             |
 | 2    | Usage error, unreadable or malformed input (including a truncated signature or ciphertext), or any other runtime error |
 
 `kem decapsulate` cannot detect tampering: a modified ciphertext yields an
@@ -436,9 +437,10 @@ What kMOSAIC provides, and what it does not, is described in
 KEM rests on unstructured LWE and quasi-cyclic syndrome decoding (both must
 break), signatures on unstructured lattices, multivariate quadratics and hash
 functions (all three must break). This gives no protection against
-implementation or side-channel attacks, side-channel hardening is incomplete
-(§6.3 of the assessment lists what remains), and no review outside this
-repository has taken place. Do not use it for anything that matters.
+implementation or side-channel attacks beyond the library's own code (the
+constant-time argument has stated limits, §7.3 of the assessment), and no
+review outside this repository has taken place. Do not use it for anything
+that matters.
 
 ## Troubleshooting and FAQ
 

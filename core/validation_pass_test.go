@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
 )
 
 // TestValidateCodeParams_HugeN pins the fix for the primality loop whose

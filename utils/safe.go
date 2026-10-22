@@ -1,10 +1,10 @@
 // Package utils provides the hashing, sampling, zeroization and
 // bounds-checking helpers shared by the kMOSAIC packages.
-//
+package utils
+
 // This file holds the safe arithmetic and allocation helpers that keep
 // attacker-controlled lengths from causing integer overflow or large
 // allocations.
-package utils
 
 import (
 	"errors"

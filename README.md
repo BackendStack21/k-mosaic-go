@@ -7,8 +7,9 @@ A post-quantum key encapsulation mechanism and digital signature in pure Go,
 built by composing standard constructions over distinct hard problems
 (unstructured lattices, quasi-cyclic codes, multivariate quadratics and hash
 functions) so that a mathematical break of one problem does not break the
-primitive. Version 4.2.0, wire format 4, Go 1.24, no dependencies outside the
-standard library.
+primitive. Version 4.2.0 (module path `github.com/BackendStack21/k-mosaic-go/v4`;
+the `v1.0.x` tags are the broken original design), wire format 4, Go 1.24,
+no dependencies outside the standard library.
 
 ## Status: experimental, unreviewed, not for production
 
@@ -31,7 +32,7 @@ record; §6 and §7 describe the current state and what remains open.
 What it is good for today: as a reference for the two-assumption KEM and
 three-assumption signature design and their combiner arguments; as a worked
 example of side-channel hardening in Go (constant-time samplers,
-memory-oblivious ring multiplication, masked Gaussian elimination, with
+memory-oblivious ring multiplication, masked Gauss-Jordan elimination, with
 interleaved timing tests); and as a usable pure-Go FIPS 205 SLH-DSA
 implementation (`problems/slhdsa`). If you need a hedged post-quantum KEM in
 production, combine ML-KEM with a second standardized KEM through a standard
@@ -119,8 +120,10 @@ KEM composes two problems and the signature three.
   implicit rejection; `Encrypt`/`Decrypt` wrap it with AES-256-GCM.
 - **Signatures**: lattice + multivariate + hash-based combiner with a
   per-signature nonce.
-- **Constant-time by construction** on every path that touches secret data
-  (see "Security Levels" for the boundary of that claim).
+- **Written to be constant-time on secret data**: no secret-dependent
+  branch, loop bound, memory address or shift amount in the library's own
+  code (compiler, runtime and hardware are outside the claim; see
+  "Security Levels").
 - **Self-describing formats**: an 8-byte header on every object; parsers
   take no parameters, reject other versions, and allocate nothing before
   validating lengths.
@@ -130,7 +133,7 @@ KEM composes two problems and the signature three.
 ## Installation
 
 ```sh
-go get github.com/BackendStack21/k-mosaic-go
+go get github.com/BackendStack21/k-mosaic-go/v4
 ```
 
 Requires Go 1.24 or later; the library has no dependencies outside the
@@ -140,11 +143,11 @@ standard library.
 
 Use the `k-mosaic-cli` for common tasks such as key generation, encryption/decryption, and signing/verification.
 
-### Quick Start
+### CLI quick start
 
 ```sh
 # Install the CLI
-go install github.com/BackendStack21/k-mosaic-go/cmd/k-mosaic-cli@latest
+go install github.com/BackendStack21/k-mosaic-go/v4/cmd/k-mosaic-cli@latest
 ```
 
 ```bash
@@ -171,8 +174,9 @@ Key topics in CLI.md:
 - Troubleshooting and FAQ
 
 Every `go` and `bash` block in CLI.md and in this README is executed by
-`go test ./test/ -run TestDocumentationSnippets` against the current tree;
-`sh`, `json` and `text` blocks are illustrative and not checked.
+`go test ./test/ -run TestDocumentationSnippets` against the current tree
+(`bash` blocks run in order in one working directory per document); `sh`,
+`json` and `text` blocks are illustrative and not checked.
 
 ## Quick Start
 
@@ -182,24 +186,40 @@ package main
 import (
     "bytes"
     "fmt"
-    kmosaic "github.com/BackendStack21/k-mosaic-go"
-    "github.com/BackendStack21/k-mosaic-go/kem"
-    "github.com/BackendStack21/k-mosaic-go/sign"
+    "log"
+
+    kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+    "github.com/BackendStack21/k-mosaic-go/v4/kem"
+    "github.com/BackendStack21/k-mosaic-go/v4/sign"
 )
 
 func main() {
-    // Key Encapsulation
-    kemKeyPair, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
-    enc, _ := kem.Encapsulate(&kemKeyPair.PublicKey)
-    recipientSecret, _ := kem.Decapsulate(&kemKeyPair.SecretKey, &kemKeyPair.PublicKey, &enc.Ciphertext)
+    // Key encapsulation.
+    kemKeyPair, err := kem.GenerateKeyPair(kmosaic.MOS_128)
+    if err != nil {
+        log.Fatal(err)
+    }
+    enc, err := kem.Encapsulate(&kemKeyPair.PublicKey)
+    if err != nil {
+        log.Fatal(err)
+    }
+    recipientSecret, err := kem.Decapsulate(&kemKeyPair.SecretKey, &kemKeyPair.PublicKey, &enc.Ciphertext)
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Printf("Shared secrets match: %v\n", bytes.Equal(enc.SharedSecret, recipientSecret))
 
-    // Digital Signatures
-    signKeyPair, _ := sign.GenerateKeyPair(kmosaic.MOS_128)
+    // Digital signatures.
+    signKeyPair, err := sign.GenerateKeyPair(kmosaic.MOS_128)
+    if err != nil {
+        log.Fatal(err)
+    }
     message := []byte("Hello, post-quantum world!")
-    signature, _ := sign.Sign(&signKeyPair.SecretKey, &signKeyPair.PublicKey, message)
-    isValid := sign.Verify(&signKeyPair.PublicKey, message, signature)
-    fmt.Printf("Signature valid: %v\n", isValid)
+    signature, err := sign.Sign(&signKeyPair.SecretKey, &signKeyPair.PublicKey, message)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Signature valid: %v\n", sign.Verify(&signKeyPair.PublicKey, message, signature))
 }
 ```
 
@@ -217,7 +237,7 @@ func main() {
 | Sign DeserializePK   | 24 ms   | 46 ms   |
 | Sign DeserializeSK   | 21 ms   | 84 ms   |
 
-The KEM is 3× (key generation, encapsulation) to 5× (decapsulation) slower than 4.0.0
+The KEM is 2.5–3.5× (key generation, encapsulation) to 3–5× (decapsulation) slower than 4.0.0
 because every secret-dependent operation is now dense or memory-oblivious
 (SECURITY_ASSESSMENT.md §6.2 and §7).
 
@@ -243,7 +263,8 @@ parameters and reject anything from another version. Length prefixes are
 checked as 64-bit values (safe on 32-bit platforms) and every parser requires
 an exact length. Errors wrap the sentinels in `errors.go`
 (`ErrInvalidKey`, `ErrInvalidCiphertext`, `ErrInvalidSignature`,
-`ErrKeyMismatch`, `ErrAuthentication`, `ErrInvalidParams`).
+`ErrKeyMismatch`, `ErrAuthentication`, `ErrInvalidParams`,
+`ErrMessageTooLarge`).
 
 ## API Reference
 
@@ -260,8 +281,8 @@ import (
 	"fmt"
 	"log"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/kem"
 )
 
 func main() {
@@ -327,8 +348,8 @@ import (
 	"fmt"
 	"log"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/sign"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/sign"
 )
 
 func main() {
@@ -376,7 +397,7 @@ LWE instance at NIST level 1).
 
 | Level   | SLSS (LWE)                 | QCSD (code)            | latsig            | uov               | slhdsa            |
 | ------- | -------------------------- | ---------------------- | ----------------- | ----------------- | ----------------- |
-| MOS_128 | n = m = 768: ≈2^159 classical / 2^145 quantum core-SVP (level 1) | hqc-256 (NIST level 5) | ML-DSA-65 shape (level 3 by analogy) | uov-Ip (level 1)  | SLH-DSA-128f (level 1) |
+| MOS_128 | n = m = 768: ≈2^160 classical / 2^145 quantum core-SVP (level 1) | hqc-256 (NIST level 5) | ML-DSA-65 shape (level 3 by analogy) | uov-Ip (level 1)  | SLH-DSA-128f (level 1) |
 | MOS_256 | n = m = 1152: ≈2^251 classical / 2^234 quantum core-SVP (≈ level 5) | hqc-256 (NIST level 5) | ML-DSA-87 shape (level 5 by analogy) | uov-V (level 5)   | SLH-DSA-256f (level 5) |
 
 Provenance of the figures:
@@ -385,7 +406,8 @@ Provenance of the figures:
   dual, zero-guessing and an idealised sparse-secret hybrid; ±10 bits; not
   the Lattice Estimator). The sparse secret costs under 2 bits at MOS_128
   and up to 8 bits classically at MOS_256. The LWE decryption-failure bound
-  is below 2^-1000 per ciphertext; the composite rate is HQC's (< 2^-256).
+  is below 2^-1000 (MOS_128) and 2^-500 (MOS_256) per ciphertext; the
+  composite rate is HQC's (< 2^-256).
 - **latsig**: the published ML-DSA levels are applied *by analogy* to a
   transplant onto unstructured matrices that has no published analysis.
 - **QCSD, uov, slhdsa**: the published levels of the parameter sets they
@@ -397,11 +419,14 @@ Provenance of the figures:
 Side channels: since 4.2.0 every operation on secret data (the samplers,
 the LWE products, the code component's ring multiplication and decoders,
 the lattice signature's arithmetic, UOV signing and key generation) is
-constant-time by construction: no branch, loop bound, memory address or
-shift amount depends on a secret (see §6.3 and §7 of the assessment for
-the arguments and measurements). What remains outside the guarantee is the
-Go runtime and compiler, the hash and AES implementations of the standard
-library, and hardware where multiplication latency depends on operands.
+written to be constant-time: no branch, loop bound, memory address or shift
+amount depends on a secret in the library's own code (see §7.1 and §7.3 of
+the assessment for the arguments and measurements). Outside that claim: the
+Go compiler and runtime, the standard library's SHA-3 and AES, hardware
+whose multiply latency depends on operands, 32-bit targets (where 64-bit
+multiplies are compiled from 32-bit ones), the lattice signature's rejection
+sampling (which branches exactly as FIPS 204 does) and the visible retry of
+UOV signing on a singular system.
 
 ## Requirements
 

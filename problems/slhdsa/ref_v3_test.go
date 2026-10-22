@@ -1,10 +1,10 @@
 package slhdsa
 
-// Reference implementation: a verbatim copy of the v3 slhdsa.go (verified
-// byte-for-byte against an independent FIPS 205 implementation), with its
+// Reference implementation: a verbatim copy of the v3 slhdsa.go with its
 // identifiers renamed and the x/crypto SHAKE256 replaced by the identical
 // crypto/sha3 one. It is used only to check that the optimized code produces
-// byte-identical keys and signatures.
+// byte-identical keys and signatures; FIPS 205 conformance itself is
+// enforced by acvp_test.go against NIST ACVP vectors.
 
 import (
 	"crypto/sha3"
@@ -12,8 +12,8 @@ import (
 	"errors"
 	"sync"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 var refShakePool = sync.Pool{New: func() interface{} { return sha3.NewSHAKE256() }}

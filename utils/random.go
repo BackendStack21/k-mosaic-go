@@ -64,8 +64,9 @@ func RandomInt(max int) (int, error) {
 
 // SampleCenteredBinomial samples n integers from the centered binomial
 // distribution with parameter eta (mean 0, variance eta/2, support
-// [-eta, eta]). It is the deterministic, integer-only replacement for
-// SampleGaussianVector: the output depends only on the bits of SHAKE256(seed),
+// [-eta, eta]). It is deterministic and integer-only (it replaced the
+// floating-point sampler of earlier versions): the output depends only on
+// the bits of SHAKE256(seed),
 // so it is reproducible across platforms and compilers, which
 // Fujisaki-Okamoto re-encryption requires.
 //

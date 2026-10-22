@@ -16,17 +16,18 @@
 //	h   = MakeHint(-T0·c, w - S2·c + T0·c), restart if more than ω hints
 //
 // and verification recomputes w1 as UseHint(h, A·z - T1·c·2^d) and checks c̃.
-// Security reduces to unstructured LWE (key recovery) and SIS (forgery) with
-// the parameters of ML-DSA-65 / ML-DSA-87.
+// Security reduces to unstructured LWE (key recovery) and SIS (forgery). The
+// parameters are those of ML-DSA-65 / ML-DSA-87 applied by analogy: the
+// transplant to unstructured matrices has no published analysis.
 package latsig
 
 import (
 	"errors"
 	"fmt"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 const (

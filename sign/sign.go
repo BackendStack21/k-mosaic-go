@@ -28,14 +28,14 @@ import (
 	"fmt"
 	"sync"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/internal/wire"
-	"github.com/BackendStack21/k-mosaic-go/problems/latsig"
-	"github.com/BackendStack21/k-mosaic-go/problems/slhdsa"
-	"github.com/BackendStack21/k-mosaic-go/problems/uov"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v4/internal/wire"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/latsig"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/slhdsa"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/uov"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 const (

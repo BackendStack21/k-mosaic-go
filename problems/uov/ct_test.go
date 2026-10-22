@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -299,18 +299,33 @@ func TestPinnedKeysAndSignatures(t *testing.T) {
 // Timing and allocations.
 
 // timingCase is one signing attempt with chosen key and vinegar.
+// timingCase is one input to the shared signer: every case runs through the
+// same signer struct, the same scratch buffers and the same output buffer,
+// with only the data (signing layout, vinegar, target) swapped in, so that
+// the measurement cannot be skewed by the memory layout of per-case
+// allocations (which produced a persistent 50% offset for one case on a
+// 32-bit CI runner).
 type timingCase struct {
 	name string
 	sg   *signer
+	prep []byte // signing layout to install in sg before each batch
 	vin  []byte
 	t    []byte
 	s    []byte
 }
 
+func (c *timingCase) install() {
+	d := c.sg.d
+	c.sg.p1Prep = c.prep[:d.t1*d.stride]
+	c.sg.sPacked = c.prep[d.t1*d.stride:]
+}
+
 func measureAttempts(cases []timingCase, rounds, perBatch int) []time.Duration {
 	best := make([]time.Duration, len(cases))
 	for r := 0; r < rounds; r++ {
-		for j, c := range cases {
+		for j := range cases {
+			c := &cases[j]
+			c.install()
 			start := time.Now()
 			for i := 0; i < perBatch; i++ {
 				c.sg.attempt(c.s, c.vin, c.t)
@@ -358,10 +373,12 @@ func TestSignTimingFlat(t *testing.T) {
 			antiPrep := buildSKPrepared(d, sk.P1, S)
 			e0 := make([]byte, d.v)
 			e0[0] = 1
+			shared := newSigner(d, sk.Prepared, sk.O)
+			out := make([]byte, d.n)
 			newCase := func(name string, prep, vin []byte) timingCase {
 				tt := make([]byte, d.m)
 				rng.Read(tt)
-				return timingCase{name, newSigner(d, prep, sk.O), vin, tt, make([]byte, d.n)}
+				return timingCase{name, shared, prep, vin, tt, out}
 			}
 			randVin := func() []byte { b := make([]byte, d.v); rng.Read(b); return b }
 			cases := []timingCase{
@@ -371,9 +388,11 @@ func TestSignTimingFlat(t *testing.T) {
 				newCase("random vinegar 1", sk.Prepared, randVin()),
 				newCase("random vinegar 2", sk.Prepared, randVin()),
 			}
+			cases[0].install()
 			if cases[0].sg.attempt(cases[0].s, cases[0].vin, cases[0].t) != 1 {
 				t.Fatal("zero vinegar not flagged singular")
 			}
+			cases[1].install()
 			if cases[1].sg.attempt(cases[1].s, cases[1].vin, cases[1].t) != 0 {
 				t.Fatal("anti-identity system flagged singular")
 			}

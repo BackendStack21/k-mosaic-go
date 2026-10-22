@@ -117,7 +117,7 @@ func runGoSnippet(t *testing.T, root, doc string, s snippet) {
 		return
 	}
 	dir := t.TempDir()
-	goMod := fmt.Sprintf("module docsnippet\n\ngo 1.24\n\nrequire github.com/BackendStack21/k-mosaic-go v0.0.0\n\nreplace github.com/BackendStack21/k-mosaic-go => %s\n", root)
+	goMod := fmt.Sprintf("module docsnippet\n\ngo 1.24\n\nrequire github.com/BackendStack21/k-mosaic-go/v4 v4.0.0\n\nreplace github.com/BackendStack21/k-mosaic-go/v4 => %s\n", root)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestExampleProgramBuildsAndRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("running examples/basic: %v\n%s", err, out)
 	}
-	for _, want := range []string{"Shared secrets match", "Signature"} {
+	for _, want := range []string{"Shared secrets match", "Signature is valid"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("example output lacks %q:\n%s", want, out)
 		}

@@ -1,7 +1,7 @@
 # kMOSAIC Go - Makefile
 # Post-quantum cryptographic library
 
-.PHONY: all build test test-verbose test-race bench bench-full coverage coverage-html lint fmt vet clean install help
+.PHONY: all build test test-verbose test-race test-386 bench bench-full bench-128 bench-256 coverage coverage-html lint fmt vet security deps verify update example doc clean install check ci help
 
 # Default target
 all: fmt vet test
@@ -110,9 +110,8 @@ security:
 
 # Generate documentation
 doc:
-	@echo "Starting documentation server at http://localhost:6060"
-	@echo "Visit http://localhost:6060/pkg/github.com/BackendStack21/k-mosaic-go/"
-	godoc -http=:6060
+	@echo "Package documentation (use 'go doc -all ./<package>' for details):"
+	go doc ./...
 
 # Quick check (fmt + vet + test)
 check: fmt vet test
@@ -126,8 +125,8 @@ test-386:
 	GOARCH=386 go test ./core/ ./utils/ ./problems/qcsd/ ./problems/uov/ ./problems/slhdsa/
 
 # CI pipeline simulation
-ci: deps fmt vet test-race test-386 coverage
-	@echo "CI pipeline completed!"
+ci: fmt vet lint test test-race test-386
+	@echo "Local CI pipeline completed (the hosted CI additionally fuzzes the deserializers)"
 
 # Help
 help:

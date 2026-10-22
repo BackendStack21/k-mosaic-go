@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/kem"
+	"github.com/BackendStack21/k-mosaic-go/v4/sign"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 // TestKEMRoundtrip tests key generation, encapsulation, and decapsulation.
@@ -454,10 +454,10 @@ func BenchmarkSign(b *testing.B) {
 	})
 }
 
-// TestDeterministicNIZK tests NIZK proof generation and validation with fixed seed
-// This allows reproducible debugging of NIZK proofs for cross-implementation comparison
-func TestDeterministicNIZK(t *testing.T) {
-	// Fixed seed for deterministic NIZK proof generation
+// TestDeterministicEncapsulationRoundTrip checks that a deterministic
+// encapsulation with a fixed ephemeral secret decapsulates correctly at
+// both levels.
+func TestDeterministicEncapsulationRoundTrip(t *testing.T) {
 	fixedSeed := []byte{
 		0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
 		0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -466,23 +466,21 @@ func TestDeterministicNIZK(t *testing.T) {
 	}
 
 	t.Run("MOS-128", func(t *testing.T) {
-		testDeterministicNIZKLevel(t, kmosaic.MOS_128, fixedSeed)
+		testDeterministicRoundTripLevel(t, kmosaic.MOS_128, fixedSeed)
 	})
 
 	t.Run("MOS-256", func(t *testing.T) {
-		testDeterministicNIZKLevel(t, kmosaic.MOS_256, fixedSeed)
+		testDeterministicRoundTripLevel(t, kmosaic.MOS_256, fixedSeed)
 	})
 }
 
-func testDeterministicNIZKLevel(t *testing.T, level kmosaic.SecurityLevel, fixedSeed []byte) {
+func testDeterministicRoundTripLevel(t *testing.T, level kmosaic.SecurityLevel, fixedSeed []byte) {
 	// Generate key pair
 	kp, err := kem.GenerateKeyPair(level)
 	if err != nil {
 		t.Fatalf("GenerateKeyPair failed: %v", err)
 	}
 
-	// Use fixed ephemeral secret for deterministic output
-	// This ensures the NIZK proof is reproducible for debugging
 	result, err := kem.EncapsulateDeterministic(&kp.PublicKey, fixedSeed)
 	if err != nil {
 		t.Fatalf("EncapsulateDeterministic failed: %v", err)
@@ -498,12 +496,6 @@ func testDeterministicNIZKLevel(t *testing.T, level kmosaic.SecurityLevel, fixed
 		t.Error("Shared secrets do not match after roundtrip")
 	}
 
-	// Write proof data for debugging
-	if os.Getenv("DEBUG_NIZK") != "" {
-		t.Logf("Level: %s", level)
-		t.Logf("Ciphertext: %x", result.Ciphertext)
-		t.Logf("SharedSecret: %x", result.SharedSecret)
-	}
 }
 
 // TestSecurityValidation_EmptyMessage tests that an empty message encrypts and

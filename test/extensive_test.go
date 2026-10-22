@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v4/kem"
+	"github.com/BackendStack21/k-mosaic-go/v4/sign"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 // =============================================================================

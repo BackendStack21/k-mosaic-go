@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to the Go implementation. Dates are the commit dates on
-the `fix/functional-bugs` branch; the wire format is version 4 throughout
-4.x.
+All notable changes to the Go implementation. Dates are commit dates (UTC);
+the wire format is version 4 throughout 4.x. Since 4.2.0 the module path is
+`github.com/BackendStack21/k-mosaic-go/v4`.
 
 ## 4.2.0 — 2026-10-22
 
@@ -21,6 +21,7 @@ Security hardening; no key, ciphertext or signature changed.
 - Hash intermediates on the KEM path are zeroized; the unused floating-point
   Gaussian sampler was removed.
 - Cost: KEM decapsulation about 7 ms (was 2.3 ms); UOV key generation 2×.
+- Module path moved to `/v4`; the entropy check on lattice seeds was removed.
 - `SECURITY_ASSESSMENT.md` §7 records the changes and arguments.
 
 ## 4.1.0 — 2026-10-22
@@ -48,9 +49,9 @@ because the sparse-vector samplers changed.
   IND-CCA proof is classical-ROM; strong unforgeability is assumed of the
   components; historical sections of the assessment are marked.
 
-## 4.0.0 — 2026-10-21
+## 4.0.0 — 2026-10-22
 
-Breaking release after a five-reviewer internal panel.
+Breaking release after an internal five-reviewer review.
 
 - Removed the ciphertext "proof" field that leaked the KEM shares in every
   earlier version; the ciphertext is exactly the two component ciphertexts.

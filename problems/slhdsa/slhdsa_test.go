@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 func TestBase2b(t *testing.T) {

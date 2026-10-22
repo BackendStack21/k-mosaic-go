@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 // TestForgeryWithoutSecretKeyFails reproduces the attack that broke the

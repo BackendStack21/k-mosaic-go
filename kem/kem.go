@@ -13,10 +13,9 @@
 // Decapsulation rejects malformed shapes early (shapes are public); for
 // every well-shaped ciphertext it performs both decryptions, the
 // re-encryption and the comparison with the same control flow and the same
-// memory access pattern: the component samplers are constant-time and the
-// SLSS products are dense. The remaining known data-dependent memory access
-// is the window offset of the code component's sparse ring multiplication
-// (see package qcsd).
+// memory access pattern: the component samplers are constant-time, the
+// SLSS products are dense and the code component's ring multiplication is
+// memory-oblivious (see package qcsd).
 //
 // Every serialized object starts with the self-describing header of
 // internal/wire, so deserialization needs no parameters.
@@ -29,13 +28,13 @@ import (
 	"fmt"
 	"sync"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/internal/wire"
-	"github.com/BackendStack21/k-mosaic-go/problems/qcsd"
-	"github.com/BackendStack21/k-mosaic-go/problems/slss"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v4/internal/wire"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/qcsd"
+	"github.com/BackendStack21/k-mosaic-go/v4/problems/slss"
+	"github.com/BackendStack21/k-mosaic-go/v4/utils"
 )
 
 const (

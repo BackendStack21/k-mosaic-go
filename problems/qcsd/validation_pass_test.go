@@ -1,12 +1,12 @@
 package qcsd
 
 import (
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
 	"math/rand"
 	"slices"
 	"testing"
 
-	"github.com/BackendStack21/k-mosaic-go/core"
+	"github.com/BackendStack21/k-mosaic-go/v4/core"
 )
 
 // TestSampleFixedWeight_WeightAndUniformity checks that the constant-time

@@ -9,6 +9,7 @@
 
 # Output of the go coverage tool
 coverage.out
+coverage.html
 
 # Vendor directory
 /vendor/
@@ -42,15 +43,12 @@ Godeps.json
 # Ignore compiled packages
 *.a
 
-# Ignore test binary
-*.test
-
 # Ignore temporary files
 tmp/
 
 # Keep go.mod and go.sum tracked
 # (do not ignore them)
 
-# Ignore local CLI tool binary
-k-mosaic-cli
-cmd/k-mosaic-cli/k-mosaic-cli
+# Ignore local CLI tool binary (anchored: the source directory has the same name)
+/k-mosaic-cli
+/cmd/k-mosaic-cli/k-mosaic-cli
