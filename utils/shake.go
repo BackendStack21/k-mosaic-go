@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	// MaxHashConcatInputSize prevents integer overflow and collision attacks in HashConcat.
-	// Each input must be <= 100MB. This provides safe encoding while remaining reasonable.
+	// MaxHashConcatInputSize bounds each input of HashConcat (whose
+	// encoding length-prefixes every input, so the bound only guards the
+	// prefix arithmetic and memory use, not the security of the hash).
 	MaxHashConcatInputSize = 100 * 1024 * 1024
 )
 

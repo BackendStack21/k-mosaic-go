@@ -151,3 +151,29 @@ func runBashSnippet(t *testing.T, bin, workDir, doc string, s snippet) {
 		t.Errorf("%s:%d: bash snippet failed: %v\n--- snippet ---\n%s--- output ---\n%s", doc, s.line, err, s.code, out.String())
 	}
 }
+
+// TestExampleProgramBuildsAndRuns builds examples/basic and runs it, so the
+// shipped example cannot rot.
+func TestExampleProgramBuildsAndRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("example run skipped in -short mode")
+	}
+	root := repoRoot(t)
+	bin := filepath.Join(t.TempDir(), "basic")
+	build := exec.Command("go", "build", "-o", bin, "./examples/basic")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building examples/basic: %v\n%s", err, out)
+	}
+	run := exec.Command(bin)
+	run.Dir = t.TempDir()
+	out, err := run.CombinedOutput()
+	if err != nil {
+		t.Fatalf("running examples/basic: %v\n%s", err, out)
+	}
+	for _, want := range []string{"Shared secrets match", "Signature"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("example output lacks %q:\n%s", want, out)
+		}
+	}
+}

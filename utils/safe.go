@@ -1,7 +1,9 @@
-// Package utils provides utility functions for kMOSAIC.
-// This file contains safe arithmetic and allocation helpers to prevent
-// integer overflow and denial-of-service via large allocations.
-
+// Package utils provides the hashing, sampling, zeroization and
+// bounds-checking helpers shared by the kMOSAIC packages.
+//
+// This file holds the safe arithmetic and allocation helpers that keep
+// attacker-controlled lengths from causing integer overflow or large
+// allocations.
 package utils
 
 import (
@@ -9,28 +11,20 @@ import (
 	"math"
 )
 
-// Maximum allowed lengths for various data types to prevent DoS via large allocations.
+// Upper bounds used by the allocation helpers below to refuse sizes that
+// no valid kMOSAIC object can reach.
 const (
-	// MaxVectorLength is the maximum allowed length for vectors (e.g., SLSS secret, TDD factors).
+	// MaxVectorLength bounds the length of a vector (e.g. an SLSS secret column).
 	MaxVectorLength = 1 << 20 // 1M elements
 
-	// MaxMatrixElements is the maximum allowed number of elements in a matrix.
+	// MaxMatrixElements bounds the number of elements of a matrix.
 	MaxMatrixElements = 1 << 24 // 16M elements
 
-	// MaxTensorElements is the maximum allowed number of elements in a tensor.
-	MaxTensorElements = 1 << 26 // 64M elements
-
-	// MaxFactorCount is the maximum allowed number of factors (e.g., TDD rank).
-	MaxFactorCount = 1000
-
-	// MaxMessageSize is the maximum allowed message size in bytes.
+	// MaxMessageSize bounds a message handled by the helpers in this package.
 	MaxMessageSize = 1 << 20 // 1MB
 
-	// MaxPayloadLength is the maximum allowed payload length for serialized data.
+	// MaxPayloadLength bounds the length of any serialized payload.
 	MaxPayloadLength = 1 << 28 // 256MB
-
-	// MaxWalkLength is the maximum allowed walk length for EGRW.
-	MaxWalkLength = 1 << 16 // 64K steps
 )
 
 var (

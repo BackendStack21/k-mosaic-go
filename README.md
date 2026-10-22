@@ -1,35 +1,73 @@
-# kMOSAIC - Go Implementation
+# kMOSAIC — Go implementation
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![CI](https://github.com/BackendStack21/k-mosaic-go/actions/workflows/ci.yml/badge.svg)](https://github.com/BackendStack21/k-mosaic-go/actions/workflows/ci.yml)
 
-A Go implementation of the kMOSAIC post-quantum cryptographic library.
+A post-quantum key encapsulation mechanism and digital signature in pure Go,
+built by composing standard constructions over distinct hard problems
+(unstructured lattices, quasi-cyclic codes, multivariate quadratics and hash
+functions) so that a mathematical break of one problem does not break the
+primitive. Version 4.2.0, wire format 4, Go 1.24, no dependencies outside the
+standard library.
 
-> A TypeScript/JavaScript version is also available at [https://github.com/BackendStack21/k-mosaic](https://github.com/BackendStack21/k-mosaic).
+## Status: experimental, unreviewed, not for production
+
+**Do not use this library to protect real data.** It has not been reviewed
+by anyone outside this repository. Its two custom pieces, the LWE component
+and the lattice signature over unstructured matrices, have no published
+analysis; their security figures come from a script in this repository.
+Three earlier versions were totally broken while their own documentation
+said otherwise.
+
+What *has* been done, all of it from inside the project: five rounds of
+attack-and-fix, an adversarial review of 4.0.0 by seven separately briefed
+reviewers (no cryptographic break found; every defect found was fixed), a
+constant-time rewrite of every operation on secret data, NIST ACVP
+conformance of the SLH-DSA component, 32-bit and race-detector CI, fuzzing of
+every parser, and documentation whose claims are cross-checked against the
+code. [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) is the complete
+record; §6 and §7 describe the current state and what remains open.
+
+What it is good for today: as a reference for the two-assumption KEM and
+three-assumption signature design and their combiner arguments; as a worked
+example of side-channel hardening in Go (constant-time samplers,
+memory-oblivious ring multiplication, masked Gaussian elimination, with
+interleaved timing tests); and as a usable pure-Go FIPS 205 SLH-DSA
+implementation (`problems/slhdsa`). If you need a hedged post-quantum KEM in
+production, combine ML-KEM with a second standardized KEM through a standard
+combiner instead.
+
+What would make it usable: an independent cryptanalysis of the SLSS
+parameters and the lattice-signature transplant, a third-party
+implementation audit, and interoperability vectors for every component.
+
+> The TypeScript project at
+> [BackendStack21/k-mosaic](https://github.com/BackendStack21/k-mosaic) and
+> its white paper describe the **pre-4.0 design**, which this implementation
+> replaced because it was insecure. The two are not compatible, and the white
+> paper does not describe this code.
 
 ## Documentation
 
-- [kMOSAIC White Paper](https://github.com/BackendStack21/k-mosaic/blob/main/kMOSAIC_WHITE_PAPER.md) - Detailed technical specification and cryptographic design
-- [Developer Guide - TypeScript Reference](https://github.com/BackendStack21/k-mosaic/blob/main/DEVELOPER_GUIDE.md) - Implementation guidelines and best practices
+- [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md): attacks reproduced
+  against earlier versions, the redesign, the reviews, the current
+  guarantees and the open items.
+- [SECURITY.md](SECURITY.md): supported versions and how to report.
+- [CLI.md](CLI.md): the `k-mosaic-cli` guide; every command in it is executed
+  by the test suite.
+- [BenchmarkReport.md](BenchmarkReport.md): measurements for 4.2.0.
+- [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md).
+- [docs/estimator/](docs/estimator/): the scripts behind the LWE security
+  and failure-rate figures.
 
-## ⚠️ Security Warning
-
-**kMOSAIC is an experimental library that has not been reviewed by anyone
-outside this repository. DO NOT use in production systems protecting sensitive
-data.**
-
-Versions before 4.0.0 are broken. In 1.x the KEM shared secret could be
+Versions before 4.0.0 are broken: in 1.x the KEM shared secret could be
 recovered from the public key and ciphertext alone and signatures could be
-forged by anyone holding the public key; every version before 4.0.0 carried
-a share-leaking "proof" field in the KEM ciphertext. See
-[SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the reproduced attacks,
-a claim-by-claim review of the original design, the 3.0 redesign, the 4.0
-review and the 4.1 validation pass (§6), which states what has and has not
-been verified. Keys, ciphertexts and signatures from earlier versions must be
-discarded; 4.x refuses to parse them. 4.1.0 changed the sparse-vector
-samplers to constant-time ones, so keys derived from a seed differ from
-4.0.0 (the wire format is unchanged). 4.2.0 made the remaining secret-data
-paths (the code component's ring multiplication, UOV signing and key
-generation) memory-oblivious without changing any key or signature.
+forged by anyone holding the public key, and every version before 4.0.0
+carried a share-leaking "proof" field in the KEM ciphertext. Keys,
+ciphertexts and signatures from earlier versions must be discarded; 4.x
+refuses to parse them. 4.1.0 changed the sparse-vector samplers, so keys
+derived from a seed differ from 4.0.0 (the wire format is unchanged); 4.2.0
+changed no key, ciphertext or signature.
 
 ## Overview
 
@@ -77,11 +115,17 @@ KEM composes two problems and the signature three.
 
 ## Features
 
-- **Key Encapsulation Mechanism (KEM)**: LWE + code-based combiner with implicit rejection
-- **Encryption/Decryption**: Hybrid encryption using the KEM and AES-256-GCM
-- **Digital Signatures**: lattice + multivariate + hash-based combiner
-- **Parallel Execution**: Components run concurrently with Go goroutines
-- **Two Parameter Sets**: MOS_128 and MOS_256 (see "Security Levels")
+- **KEM**: LWE + code-based combiner under a Fujisaki-Okamoto transform with
+  implicit rejection; `Encrypt`/`Decrypt` wrap it with AES-256-GCM.
+- **Signatures**: lattice + multivariate + hash-based combiner with a
+  per-signature nonce.
+- **Constant-time by construction** on every path that touches secret data
+  (see "Security Levels" for the boundary of that claim).
+- **Self-describing formats**: an 8-byte header on every object; parsers
+  take no parameters, reject other versions, and allocate nothing before
+  validating lengths.
+- **Parallel execution** of the components on the available cores.
+- **Two parameter sets**, MOS_128 and MOS_256 (see "Security Levels").
 
 ## Installation
 
@@ -361,8 +405,14 @@ library, and hardware where multiplication latency depends on operands.
 
 ## Requirements
 
-- Go 1.24 or later (standard-library `crypto/sha3`; no external modules)
+- Go 1.24 or later (standard-library `crypto/sha3`; no external modules).
+- Tested on linux/amd64 and, in CI, on the 32-bit `386` target; it
+  cross-compiles for arm, arm64, riscv64, windows/amd64 and darwin/arm64.
+
+## Contributing and security reports
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT License - See LICENSE file for details.
+MIT License, see [LICENSE](LICENSE).

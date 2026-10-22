@@ -1,18 +1,7 @@
-// Package kmosaic implements the kMOSAIC post-quantum cryptographic library.
-//
-// kMOSAIC composes independent post-quantum hard problems so that breaking a
-// primitive requires breaking every component it is built from:
-//
-//   - KEM: unstructured LWE with sparse ternary secrets (SLSS) and quasi-cyclic
-//     syndrome decoding (QCSD, the HQC construction). The ephemeral secret is
-//     split into one share per component; recovering it needs both.
-//   - Signatures: an unstructured Fiat-Shamir-with-aborts lattice signature
-//     (SIS/LWE), an Unbalanced Oil-and-Vinegar multivariate signature (MQ), and
-//     a stateless hash-based signature (SLH-DSA). A composite signature is
-//     valid only if all three are valid, so a forger must forge all three.
-//
-// WARNING: This is an experimental library that has not been reviewed outside
-// this repository. DO NOT use in production systems protecting sensitive data.
+// Shared types of the kMOSAIC library. The composite and component
+// packages operate on these structs; the package documentation is in
+// mosaic.go.
+
 package kmosaic
 
 // SecurityLevel represents the security level of kMOSAIC parameters.

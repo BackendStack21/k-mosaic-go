@@ -445,7 +445,7 @@ repository has taken place. Do not use it for anything that matters.
 **"command not found"**: the binary is not on your PATH; run it as
 `./k-mosaic-cli` or add its directory to PATH.
 
-**"invalid key: wire: bad header"**: the file is not a 4.0.0 object (an older
+**"invalid key: wire: bad header"**: the file is not a 4.x object (an older
 key file, a signing key passed where a KEM key is expected, or the wrong field
 extracted). Regenerate the key with this version.
 

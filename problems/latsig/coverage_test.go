@@ -15,8 +15,11 @@ func TestGenerateKeyPairFromSeed_Errors(t *testing.T) {
 	if _, err := GenerateKeyPairFromSeed(params, make([]byte, 10)); err == nil {
 		t.Error("expected error for short seed")
 	}
-	if _, err := GenerateKeyPairFromSeed(params, make([]byte, 32)); err == nil {
-		t.Error("expected error for low-entropy seed")
+	// Any 32-byte seed is accepted as given; the composite derives it from
+	// a hash, and a statistical check would inspect a secret with
+	// data-dependent control flow.
+	if _, err := GenerateKeyPairFromSeed(params, make([]byte, 32)); err != nil {
+		t.Errorf("all-zero seed rejected: %v", err)
 	}
 	seed, _ := utils.SecureRandomBytes(32)
 	bad := params

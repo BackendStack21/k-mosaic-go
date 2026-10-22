@@ -86,9 +86,9 @@ func GenerateKeyPairFromSeed(params kmosaic.LatticeSignParams, seed []byte) (*km
 	if len(seed) < SeedSize {
 		return nil, errors.New("seed must be at least 32 bytes")
 	}
-	if err := utils.ValidateSeedEntropy(seed); err != nil {
-		return nil, err
-	}
+	// The seed is used as given: the composite derives it from a hash, and
+	// a statistical "entropy" check on a secret would inspect it with
+	// data-dependent control flow while rejecting legitimate values.
 	if err := checkParams(params); err != nil {
 		return nil, err
 	}

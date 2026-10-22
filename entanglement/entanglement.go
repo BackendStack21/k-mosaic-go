@@ -1,4 +1,13 @@
-// Package entanglement implements the cryptographic binding for kMOSAIC.
+// Package entanglement implements the XOR secret sharing that splits the
+// KEM's ephemeral secret between its components, and the binding checksum
+// stored in composite public keys.
+//
+// The binding is a domain-separated hash of the serialized component public
+// keys. Anyone can recompute it from the public key, so it is an integrity
+// check against accidental or careless mixing of components, not an
+// authentication: what prevents a secret key from being used with the wrong
+// public key is the public-key hash stored in the secret key and checked by
+// kem.Decapsulate and sign.Sign.
 package entanglement
 
 import (

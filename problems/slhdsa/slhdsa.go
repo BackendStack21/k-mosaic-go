@@ -2,8 +2,11 @@
 // signature: the stateless hash-based signature SLH-DSA (FIPS 205, the
 // standardized SPHINCS+) with SHAKE256, "simple" tweakable hashes.
 //
-// Its security rests only on the (second-)preimage resistance of SHAKE256,
-// making it independent of every algebraic assumption in the library.
+// Its security rests only on properties of SHAKE256 (preimage and
+// second-preimage resistance, PRF security of the keyed uses and
+// target-subset resilience of the FORS layer), making it independent of
+// every algebraic assumption in the library. The implementation is checked
+// bit-exactly against NIST ACVP vectors in acvp_test.go.
 //
 // Sign and Verify use the FIPS 205 "pure" external interface (Algorithms 22
 // and 24) with the context string "kmosaic-v4": the message actually signed
