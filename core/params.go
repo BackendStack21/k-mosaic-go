@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 // LatticeSignQ is the modulus of the lattice signature component (2^23 - 2^13 + 1).

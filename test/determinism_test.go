@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/v4/kem"
-	"github.com/BackendStack21/k-mosaic-go/v4/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 func TestKEMCiphertextDeterminism(t *testing.T) {

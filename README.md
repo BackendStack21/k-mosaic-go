@@ -7,7 +7,7 @@ A post-quantum key encapsulation mechanism and digital signature in pure Go,
 built by composing standard constructions over distinct hard problems
 (unstructured lattices, quasi-cyclic codes, multivariate quadratics and hash
 functions) so that a mathematical break of one problem does not break the
-primitive. Version 4.2.0 (module path `github.com/BackendStack21/k-mosaic-go/v4`;
+primitive. Version 2.0.0 (module path `github.com/BackendStack21/k-mosaic-go/v2`;
 the `v1.0.x` tags are the broken original design), wire format 4, Go 1.24,
 no dependencies outside the standard library.
 
@@ -21,7 +21,7 @@ Three earlier versions were totally broken while their own documentation
 said otherwise.
 
 What *has* been done, all of it from inside the project: five rounds of
-attack-and-fix, an adversarial review of 4.0.0 by seven separately briefed
+attack-and-fix, an adversarial review of 2.0.0-dev.3 by seven separately briefed
 reviewers (no cryptographic break found; every defect found was fixed), a
 constant-time rewrite of every operation on secret data, NIST ACVP
 conformance of the SLH-DSA component, 32-bit and race-detector CI, fuzzing of
@@ -44,7 +44,7 @@ implementation audit, and interoperability vectors for every component.
 
 > The TypeScript project at
 > [BackendStack21/k-mosaic](https://github.com/BackendStack21/k-mosaic) and
-> its white paper describe the **pre-4.0 design**, which this implementation
+> its white paper describe the **original 1.x design**, which this implementation
 > replaced because it was insecure. The two are not compatible, and the white
 > paper does not describe this code.
 
@@ -56,23 +56,28 @@ implementation audit, and interoperability vectors for every component.
 - [SECURITY.md](SECURITY.md): supported versions and how to report.
 - [CLI.md](CLI.md): the `k-mosaic-cli` guide; every command in it is executed
   by the test suite.
-- [BenchmarkReport.md](BenchmarkReport.md): measurements for 4.2.0.
+- [BenchmarkReport.md](BenchmarkReport.md): measurements for 2.0.0.
 - [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 - [docs/estimator/](docs/estimator/): the scripts behind the LWE security
   and failure-rate figures.
 
-Versions before 4.0.0 are broken: in 1.x the KEM shared secret could be
-recovered from the public key and ciphertext alone and signatures could be
-forged by anyone holding the public key, and every version before 4.0.0
-carried a share-leaking "proof" field in the KEM ciphertext. Keys,
-ciphertexts and signatures from earlier versions must be discarded; 4.x
-refuses to parse them. 4.1.0 changed the sparse-vector samplers, so keys
-derived from a seed differ from 4.0.0 (the wire format is unchanged); 4.2.0
-changed no key, ciphertext or signature.
+The 1.x releases are broken: the KEM shared secret could be recovered from
+the public key and ciphertext alone, signatures could be forged by anyone
+holding the public key, and the KEM ciphertext carried a share-leaking
+"proof" field (as did the unreleased development revisions 2.0.0-dev.1 and
+2.0.0-dev.2). Keys, ciphertexts and signatures from 1.x must be discarded;
+2.x refuses to parse them. The development revisions 2.0.0-dev.1 to
+2.0.0-dev.4 were never tagged; the history and the security assessment refer
+to them by those names.
+
+The protocol identifiers are versioned separately from the release: the wire
+header carries format version 4 and the XOF domain strings and SLH-DSA
+context end in `-v4` (protocol revision 4, introduced in 2.0.0-dev.3). They
+do not change with the release number.
 
 ## Overview
 
-kMOSAIC 4.x composes post-quantum hard problems so that a *mathematical*
+kMOSAIC 2.x composes post-quantum hard problems so that a *mathematical*
 break of a primitive requires breaking **every** problem it is built from.
 The components are standard constructions, instantiated here without
 algebraic structure where the construction allows it. In the classical
@@ -133,7 +138,7 @@ KEM composes two problems and the signature three.
 ## Installation
 
 ```sh
-go get github.com/BackendStack21/k-mosaic-go/v4
+go get github.com/BackendStack21/k-mosaic-go/v2
 ```
 
 Requires Go 1.24 or later; the library has no dependencies outside the
@@ -147,7 +152,7 @@ Use the `k-mosaic-cli` for common tasks such as key generation, encryption/decry
 
 ```sh
 # Install the CLI
-go install github.com/BackendStack21/k-mosaic-go/v4/cmd/k-mosaic-cli@latest
+go install github.com/BackendStack21/k-mosaic-go/v2/cmd/k-mosaic-cli@latest
 ```
 
 ```bash
@@ -188,9 +193,9 @@ import (
     "fmt"
     "log"
 
-    kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-    "github.com/BackendStack21/k-mosaic-go/v4/kem"
-    "github.com/BackendStack21/k-mosaic-go/v4/sign"
+    kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+    "github.com/BackendStack21/k-mosaic-go/v2/kem"
+    "github.com/BackendStack21/k-mosaic-go/v2/sign"
 )
 
 func main() {
@@ -223,7 +228,7 @@ func main() {
 }
 ```
 
-## Performance and sizes (4.2.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
+## Performance and sizes (2.0.0, 4-core x86-64 container, shared and loaded; treat as ±30%)
 
 | Operation            | MOS_128 | MOS_256 |
 | -------------------- | ------- | ------- |
@@ -237,7 +242,7 @@ func main() {
 | Sign DeserializePK   | 24 ms   | 46 ms   |
 | Sign DeserializeSK   | 21 ms   | 84 ms   |
 
-The KEM is 2.5–3.5× (key generation, encapsulation) to 3–5× (decapsulation) slower than 4.0.0
+The KEM is 2.5–3.5× (key generation, encapsulation) to 3–5× (decapsulation) slower than 2.0.0-dev.3
 because every secret-dependent operation is now dense or memory-oblivious
 (SECURITY_ASSESSMENT.md §6.2 and §7).
 
@@ -253,9 +258,9 @@ because every secret-dependent operation is now dense or memory-oblivious
 Keys are large because the lattice components are unstructured (no polynomial
 rings); the KEM ciphertext is dominated by the 14.4 KB HQC component and the
 signature by the SLH-DSA component (17 KB / 50 KB).
-[BenchmarkReport.md](BenchmarkReport.md) holds the full 4.2.0 measurements.
+[BenchmarkReport.md](BenchmarkReport.md) holds the full 2.0.0 measurements.
 
-## Formats and API (4.x)
+## Formats and API (2.x)
 
 Every serialized object starts with an 8-byte header (`"kMOS"`, format
 version 4, object type, parameter level), so `Deserialize*` functions take no
@@ -281,8 +286,8 @@ import (
 	"fmt"
 	"log"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/kem"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
 )
 
 func main() {
@@ -348,8 +353,8 @@ import (
 	"fmt"
 	"log"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/sign"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
 )
 
 func main() {
@@ -416,7 +421,7 @@ Provenance of the figures:
   HQC construction and parameters but is not bit-compatible with the HQC
   reference (own XOF domains, sampler and bit order).
 
-Side channels: since 4.2.0 every operation on secret data (the samplers,
+Side channels: in 2.0.0 every operation on secret data (the samplers,
 the LWE products, the code component's ring multiplication and decoders,
 the lattice signature's arithmetic, UOV signing and key generation) is
 written to be constant-time: no branch, loop bound, memory address or shift

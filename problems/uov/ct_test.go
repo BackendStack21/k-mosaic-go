@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"crypto/sha3"
 	"encoding/hex"
-	"github.com/BackendStack21/k-mosaic-go/v4/internal/timingtest"
+	"github.com/BackendStack21/k-mosaic-go/v2/internal/timingtest"
 	mrand "math/rand"
 	"testing"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 // ---------------------------------------------------------------------------

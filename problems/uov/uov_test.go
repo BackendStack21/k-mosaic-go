@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 // The parameter sets are spelled out here so that this package's tests do not

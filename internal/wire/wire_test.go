@@ -3,7 +3,7 @@ package wire
 import (
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 func TestHeaderRoundTrip(t *testing.T) {

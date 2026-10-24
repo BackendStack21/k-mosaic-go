@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	"github.com/BackendStack21/k-mosaic-go/v2/core"
 )
 
 // Low-level lattice helpers for the signature scheme. Everything here follows

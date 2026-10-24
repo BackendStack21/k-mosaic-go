@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 func TestDeserializeSecretKey_Truncated(t *testing.T) {

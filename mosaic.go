@@ -29,4 +29,4 @@ package kmosaic
 
 // Version of the kMOSAIC Go implementation. The wire format version (4) is
 // carried in every serialized object independently of this string.
-const Version = "4.2.0"
+const Version = "2.0.0"

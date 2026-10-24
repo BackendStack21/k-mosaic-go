@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/core"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/core"
 )
 
 // TestKeyGenRejectsWeakenedParameters pins the fix for key generation

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/BackendStack21/k-mosaic-go/v4/utils"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 func TestSecretShare_EdgeCases(t *testing.T) {

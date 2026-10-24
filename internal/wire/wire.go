@@ -12,7 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 // Version is the current format version.

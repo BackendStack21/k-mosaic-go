@@ -18,16 +18,16 @@ import (
 	"strings"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/v4/internal/wire"
-	"github.com/BackendStack21/k-mosaic-go/v4/kem"
-	"github.com/BackendStack21/k-mosaic-go/v4/sign"
-	"github.com/BackendStack21/k-mosaic-go/v4/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v2/internal/wire"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 const (
-	version = "4.2.0"
+	version = "2.0.0"
 	appName = "k-mosaic-cli"
 
 	exitOK      = 0

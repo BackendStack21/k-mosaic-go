@@ -3,9 +3,9 @@
 **Scope:** the Go implementation in this repository, its README, CLI.md,
 BenchmarkReport.md, and the claims they make. The document has grown with
 the code: sections 1 and 2 describe the original (1.x) design and are
-**historical**; section 3 the 2.0.0 fixes (historical); section 4 the 3.0.0
-redesign (historical, superseded by §5); section 5 the 4.0.0 review and
-fixes; **sections 6 (the 4.1.0 validation pass) and 7 (4.2.0) together
+**historical**; section 3 the 2.0.0-dev.1 fixes (historical); section 4 the 2.0.0-dev.2
+redesign (historical, superseded by §5); section 5 the 2.0.0-dev.3 review and
+fixes; **sections 6 (the 2.0.0-dev.4 validation pass) and 7 (2.0.0) together
 describe the current code; §7 supersedes §6.3 and §6.5 where they
 differ.** Sizes, parameters and verdicts in §1–§4 no longer apply.
 
@@ -15,13 +15,13 @@ attack survives as a regression test (`TestClaim_SLSSClusteringAttackFails`
 in `test/claims_test.go`); the others targeted components that no longer
 exist, so the outputs quoted in §1 are a record, not reproducible today.
 
-**Verdict on 4.1.0 (§6):** the KEM and signature are sound compositions of
+**Verdict on 2.0.0-dev.4 (§6):** the KEM and signature are sound compositions of
 standard constructions at the level of the hard problems, in the classical
 random-oracle model; the implementation passed an adversarial review of
 seven separately briefed internal reviews with no cryptographic break, and every defect that
 review found has been fixed. "Stronger" holds only against cryptanalysis of
 the problems, and "bug free" is not a claim anyone can verify: §6.4 lists
-what was tested, §6.5 what remains open. **Section 7 (4.2.0)** closes the
+what was tested, §6.5 what remains open. **Section 7 (2.0.0)** closes the
 open items that code can close: every operation on secret data is now
 memory-oblivious, the key-mismatch check no longer trusts a cached hash,
 and parsed secret keys are validated structurally.
@@ -147,7 +147,7 @@ hybrid attack is taken into account.
 | "MOS_128: 128-bit post-quantum security"                                         | **False.** ~2^59 quantum core-SVP for the ciphertext instance even before the structural breaks. | §1.4 |
 | "MOS_256: 256-bit post-quantum security"                                         | **False.** ~2^142 quantum core-SVP. | §1.4 |
 | "Multi-witness signatures: Fiat-Shamir scheme proving knowledge of three entangled witnesses" | **False.** The signature proved knowledge of nothing; the verifier ignored the response. No sigma protocol existed for any of the three witnesses. | §1.2 |
-| "NIZK proof" in the KEM ciphertext                                               | **False, and this review initially got it wrong.** Section 2 of the 2.0/3.0 editions called the proof "harmless". The 4.0 panel review (§5.1) showed that its "responses" are the shares XOR-masked with a hash of the challenge, which is itself the first field of the proof, so anyone could unmask both shares and recover the ephemeral secret from the ciphertext alone. It has been removed. | §5.1 |
+| "NIZK proof" in the KEM ciphertext                                               | **False, and this review initially got it wrong.** Section 2 of the 2.0.0-dev.1/2.0.0-dev.2 editions called the proof "harmless". The 2.0.0-dev.3 panel review (§5.1) showed that its "responses" are the shares XOR-masked with a hash of the challenge, which is itself the first field of the proof, so anyone could unmask both shares and recover the ephemeral secret from the ciphertext alone. It has been removed. | §5.1 |
 | CCA security via Fujisaki-Okamoto with implicit rejection                        | **Partially true.** The FO structure (derandomize on `H(m, binding)`, re-encrypt, constant-time select against a rejection value) is reasonable. It cannot help when the underlying PKE is not even CPA-secure, as was the case. | `kem.Decapsulate` |
 | "Uses constant-time operations" / side-channel resistance                        | **Overstated.** Comparisons use `crypto/subtle`, and decoding avoids branches, but Go gives no constant-time guarantees for integer multiplication, map lookups in `sampleSparseVector`, or garbage-collected memory. `Zeroize` is best-effort because the GC may have copied the data. Treat the library as not side-channel hardened. | code review |
 | "NOT formally verified by academic peer review" (warning in README)              | **True, and understated.** The warning should say the construction was found broken by elementary attacks, not merely "unverified". | this document |
@@ -175,14 +175,14 @@ hybrid attack is taken into account.
   | MOS-256 | 1152  | 288            | 12289 | 3.19 | 889  | 2^260     | 2^236   |
 
   These are estimates from a simple model; the sparse-secret hybrid attack
-  and dual attacks were not run. *(Historical: §6.1 has the 4.1 estimates
+  and dual attacks were not run. *(Historical: §6.1 has the 2.0.0-dev.4 estimates
   including hybrid and dual attacks, and `docs/estimator/` the script.)*
 - The matrix `A` is expanded from a 32-byte public seed instead of being
   stored, which keeps the public key at 449 KB / 777 KB despite the 256
-  columns of `T`. *(Historical: 4.0 packs `T` at 14 bits, 351 KB / 523 KB.)*
+  columns of `T`. *(Historical: 2.0.0-dev.3 packs `T` at 14 bits, 351 KB / 523 KB.)*
 - Decryption failure: per bit the noise is `⟨e_j, r⟩ − ⟨s_j, e1⟩ + e2_j`,
   standard deviation `σ·√(2w+1) ≈ 63` (MOS-128) / `77` (MOS-256) against a
-  threshold of `q/4 = 3072`. *(Historical: with 4.0's centered-binomial
+  threshold of `q/4 = 3072`. *(Historical: with 2.0.0-dev.3's centered-binomial
   noise and ciphertext compression the total is 129 / 138, see §6.1.)*
 
 ### 3.2 KEM: TDD and EGRW are documented as contributing nothing
@@ -228,7 +228,7 @@ instantiated.
 - CLI key files store the binary secret-key encoding; the JSON secret-key
   format and the `kem slss-debug` command (which exposed ephemeral values)
   were removed.
-- Library version bumped to 2.0.0; all serialized formats are new and
+- Library version bumped to 2.0.0-dev.1; all serialized formats are new and
   incompatible with 1.x and with the TypeScript implementation.
 
 ### 3.5 What remains open
@@ -249,15 +249,15 @@ instantiated.
 
 ---
 
-## 4. Version 3.0: implementing the claims
+## 4. Version 2.0.0-dev.2: implementing the claims
 
-*(Historical. This section describes 3.0.0 as it was designed; §5.1 shows
-that 3.0.0 was still totally broken by its "proof" field, and §6 describes
+*(Historical. This section describes 2.0.0-dev.2 as it was designed; §5.1 shows
+that 2.0.0-dev.2 was still totally broken by its "proof" field, and §6 describes
 the current state.)*
 
 The original claims were "three distinct hard problems" and "defense in
-depth". Version 2.0 fixed the breaks but left a single-assumption library.
-Version 3.0 was meant to make the claims true with problems that are
+depth". Version 2.0.0-dev.1 fixed the breaks but left a single-assumption library.
+Version 2.0.0-dev.2 was meant to make the claims true with problems that are
 actually hard and constructions that are actually usable.
 
 ### 4.1 Why the original three problems could not be kept
@@ -291,7 +291,7 @@ swapping in components from other keys.
 
 ### 4.3 The components and their parameter provenance
 
-- **SLSS** (`problems/slss`): §3.1 as of 3.0; 4.0 replaced the Gaussian sampler and added coefficient compression (§5).
+- **SLSS** (`problems/slss`): §3.1 as of 2.0.0-dev.2; 2.0.0-dev.3 replaced the Gaussian sampler and added coefficient compression (§5).
 - **QCSD** (`problems/qcsd`): the HQC construction with the published
   **hqc-256** parameters (ring length 57637, Reed-Solomon [90,32] with
   δ = 29, RM(1,7) duplicated 5×, weights 131/149/149). It is used at both
@@ -308,7 +308,7 @@ swapping in components from other keys.
 - **slhdsa** (`problems/slhdsa`): FIPS 205 SLH-DSA-SHAKE-**128f** and
   **256f**, "simple" tweakable hashes, hedged signing. Signature sizes
   (17,088 and 49,856 bytes) match the standard; WOTS+ and XMSS have unit
-  tests, FORS and the hypertree are covered end-to-end, and since 4.1 the
+  tests, FORS and the hypertree are covered end-to-end, and since 2.0.0-dev.4 the
   whole component is checked bit-exactly against NIST ACVP vectors (§6).
 
 Mixed NIST levels within a composite are deliberate: against cryptanalysis
@@ -328,7 +328,7 @@ is a heuristic.
 - It **is not** externally reviewed. The transplant of ML-DSA to
   unstructured matrices, the SLSS parameters and the implementation itself
   are this repository's work.
-- Side channels are only partly addressed (see §5.1 and §5.3 for the 4.0
+- Side channels are only partly addressed (see §5.1 and §5.3 for the 2.0.0-dev.3
   state): the code component's field arithmetic and decoder are branch-free,
   but UOV signing still uses lookup tables and a branching pivot search, and
   Go offers no constant-time guarantees.
@@ -338,10 +338,10 @@ is a heuristic.
 
 ---
 
-## 5. Version 4.0: internal review and fixes
+## 5. Version 2.0.0-dev.3: internal review and fixes
 
 Five reviewers working inside this project, with separate briefs but not
-independent of its authors and not external, examined the 3.0 code (lattice
+independent of its authors and not external, examined the 2.0.0-dev.2 code (lattice
 components, code-based component, UOV and SLH-DSA, the composite layer and
 CLI, and whole-library profiling). Every finding was either fixed or is
 recorded below. The attack programs for the critical findings were run and
@@ -351,12 +351,12 @@ confirmed before fixing; the reports and programs are not in the repository.
 
 | Severity | Finding | Fix |
 | --- | --- | --- |
-| **Critical** | The share-binding "proof" carried in every 3.0 ciphertext leaked both KEM shares: responses were `share ⊕ SHA3(H(mask-domain, challenge))` and the challenge was public. The shared secret was recoverable from public data; confirmed with a 40-line program. (Also a correction of this document's earlier "harmless" verdict.) | Proof removed. Ciphertexts are exactly the two component ciphertexts; the Fujisaki-Okamoto re-encryption check is the only binding. Regression test `TestClaim_CiphertextCarriesNoShareInformation`. |
+| **Critical** | The share-binding "proof" carried in every 2.0.0-dev.2 ciphertext leaked both KEM shares: responses were `share ⊕ SHA3(H(mask-domain, challenge))` and the challenge was public. The shared secret was recoverable from public data; confirmed with a 40-line program. (Also a correction of this document's earlier "harmless" verdict.) | Proof removed. Ciphertexts are exactly the two component ciphertexts; the Fujisaki-Okamoto re-encryption check is the only binding. Regression test `TestClaim_CiphertextCarriesNoShareInformation`. |
 | **High** | A Reed-Solomon decoding failure in the code component returned `nil` and `Decapsulate` rejected early, a 3x timing difference. This is the published decryption-failure oracle against HQC and recovers the secret `y`. | `qcsd.Decrypt` always returns K bytes plus a constant-time `ok` flag; `Decapsulate` always re-encrypts and folds `ok` into the constant-time selection. |
 | **High** | The Reed-Solomon decoder's running time grew with the number of errors (6 µs at 0 errors, 54 µs at 29), the known timing attack on HQC. | Constant-time decoder: fixed-iteration Berlekamp-Massey with masked updates, Chien/Forney at every position, branch-free GF(2^8) multiplication. Measured 42.0–42.4 µs for 0 to 90 errors. |
 | **High** | `Decapsulate` never checked that the supplied public key belonged to the secret key: a key-mismatch oracle (attacker-chosen `T + Δ`) recovers the SLSS key. | The secret key's stored public-key hash is checked in constant time; mismatch returns `ErrKeyMismatch`. The check trusts the hash cached in the public-key struct: keys from `GenerateKeyPair` and `DeserializePublicKey` are safe, a struct edited by hand with its old hash is not (documented on `PublicKeyHash`). |
 | **High** | Every length-prefix reader converted a `uint32` to `int` before bounds checking and panicked on 32-bit platforms (confirmed on GOARCH=386). | New `internal/wire` reader compares lengths as 64-bit values; parsers are exact-length; CI runs the parser tests under GOARCH=386. |
-| **Medium** | Secret-dependent hardware division (`x % q` with a runtime `q`) in SLSS decryption and lattice signing: the KyberSlash pattern. | Moduli are compile-time constants with multiply-shift reductions and branch-free corrections; `Decompose` uses the FIPS 204 constant arithmetic. *(4.0 still divided by the ring length in the code component's position sampler; removed in 4.1, §6.2.)* |
+| **Medium** | Secret-dependent hardware division (`x % q` with a runtime `q`) in SLSS decryption and lattice signing: the KyberSlash pattern. | Moduli are compile-time constants with multiply-shift reductions and branch-free corrections; `Decompose` uses the FIPS 204 constant arithmetic. *(2.0.0-dev.3 still divided by the ring length in the code component's position sampler; removed in 2.0.0-dev.4, §6.2.)* |
 | **Medium** | Composite signatures were malleable: components from two signatures on the same message could be recombined (EUF-CMA but not SUF-CMA). | A 32-byte per-signature nonce is part of the signed digest; components of different signatures never share a digest. Regression test `TestClaim_SignatureComponentsCannotBeRecombined`. |
 | **Medium** | Oversized trailing data in a ciphertext reached a hashing helper that panics above 100 MB; `Decapsulate(sk, pk, nil)` panicked. | Exact-length parsing with no trailer; nil checks on every entry point. |
 | **Medium** | Secret-key parsing accepted any seed length (an empty seed made the implicit-rejection value public). | Seeds are exactly 32 bytes everywhere; the rejection value is a PRF under a key derived from the seed. |
@@ -368,7 +368,7 @@ confirmed before fixing; the reports and programs are not in the repository.
 
 ### 5.2 Performance changes (same 4-core container, loaded by concurrent work; ratios are more reliable than absolutes)
 
-| Operation | 3.0 | 4.0 | Main change |
+| Operation | 2.0.0-dev.2 | 2.0.0-dev.3 | Main change |
 | --- | --- | --- | --- |
 | KEM Encapsulate (MOS-128) | 3.9 ms | 0.6 ms | fused window multiply in the ring (6x on the dominant product), no per-rotation allocation |
 | KEM Decapsulate (MOS-128) | 5.7 ms | 1.0 ms | as above; ciphertext serialized once |
@@ -383,10 +383,10 @@ The SLH-DSA output remains byte-identical to the implementation that was
 verified against an independent FIPS 205 reference; the only intentional
 change is the FIPS 205 "pure" domain prefix (context string `kmosaic-v4`).
 
-### 5.3 Still open as of 4.0.0
+### 5.3 Still open as of 2.0.0-dev.3
 
 *(Superseded by §6.5. Kept for the record: of the items below, the SLSS
-gathers were closed in 4.1.0 and the SLSS estimates were re-derived with
+gathers were closed in 2.0.0-dev.4 and the SLSS estimates were re-derived with
 hybrid and dual attacks; the code component's window, UOV's tables and
 pivot search, SIMD and external review remain open.)*
 
@@ -402,11 +402,11 @@ pivot search, SIMD and external review remain open.)*
 
 ---
 
-## 6. Version 4.1.0: validation pass
+## 6. Version 2.0.0-dev.4: validation pass
 
 The question put to this pass was whether two claims hold: *"this
 encryption is quantum ready and stronger"* and *"this library is bug free"*.
-Seven reviewers with separate adversarial briefs examined the 4.0.0 code
+Seven reviewers with separate adversarial briefs examined the 2.0.0-dev.3 code
 (be39551) and its documentation: (1) LWE parameter and combiner analysis
 with an independently written core-SVP estimator; (2) chosen-ciphertext and
 timing attacks on the KEM plus HQC fidelity; (3) forgery, malleability and
@@ -416,7 +416,7 @@ and cross-compilation, resource limits, CLI abuse); (5) a line-by-line static
 review; (6) a claim-by-claim audit of the documentation against the code and
 fresh measurements; (7) scaled-down lattice and code attacks on the actual
 constructions. The reviewers were not external to this project. Everything
-they found is recorded here; everything fixable was fixed in 4.1.0.
+they found is recorded here; everything fixable was fixed in 2.0.0-dev.4.
 
 ### 6.1 Claim: "quantum ready and stronger"
 
@@ -488,14 +488,14 @@ overstated it.** What holds, and what does not:
   Not putting the KEM ciphertext in the AEAD's associated data is fine: it
   is bound through the key, as in HPKE.
 
-### 6.2 Defects found in 4.0.0 and fixed in 4.1.0
+### 6.2 Defects found in 2.0.0-dev.3 and fixed in 2.0.0-dev.4
 
 Every row was confirmed by running code before it was fixed.
 
 | Severity | Finding (reviewers) | Fix |
 | --- | --- | --- |
-| **Medium–High** | Re-encryption during decapsulation ran the sparse samplers with seed-dependent work: the SLSS position sampler needed 6/7/8 SHAKE blocks (MOS-128) or 10/11 (MOS-256, 10.4% of messages), measured 435 ns apart in isolation, and the code sampler had a similar loop plus a hardware `DIV` by the ring length on secret candidates. Since the re-encryption seed is a function of the decrypted message, this is a plaintext-checking oracle of the "Don't Reject This" class (Guo–Johansson–Nilsson, TCHES 2022) that implicit rejection does not hide, and the 4.0 statement "no runtime division remains on secret data" was false. (1, 2, 5, 6) | SLSS uses a sort-based constant-time sampler (61-bit keys with the ternary value in the low bits, bitonic sorting network; the method of NTRU and Classic McEliece); the code component uses Sendrier's constant-time Fisher–Yates variant with a multiply-shift map (no division) and a branch-free scatter, and sorts key positions with a sorting network. XOF usage, control flow and memory addresses now depend only on the dimensions. Known-answer digests were re-pinned; keys derived from a seed differ from 4.0.0. |
-| **Medium** | SLSS key generation and encryption gathered rows of `A` and entries of `T` at secret positions (documented in 4.0 as a cache-timing channel, but the encryption half runs inside decapsulation). (1, 2, 5) | Both are dense products that touch every coefficient with a multiply. Cost: KEM key generation 51 / 99 ms instead of 16.5 / 33.5, encapsulation 1.5 / 2.2 ms instead of 0.8 / 0.8, decapsulation 2.3 / 2.4 ms instead of 2.2 / 1.4; see BenchmarkReport.md. |
+| **Medium–High** | Re-encryption during decapsulation ran the sparse samplers with seed-dependent work: the SLSS position sampler needed 6/7/8 SHAKE blocks (MOS-128) or 10/11 (MOS-256, 10.4% of messages), measured 435 ns apart in isolation, and the code sampler had a similar loop plus a hardware `DIV` by the ring length on secret candidates. Since the re-encryption seed is a function of the decrypted message, this is a plaintext-checking oracle of the "Don't Reject This" class (Guo–Johansson–Nilsson, TCHES 2022) that implicit rejection does not hide, and the 2.0.0-dev.3 statement "no runtime division remains on secret data" was false. (1, 2, 5, 6) | SLSS uses a sort-based constant-time sampler (61-bit keys with the ternary value in the low bits, bitonic sorting network; the method of NTRU and Classic McEliece); the code component uses Sendrier's constant-time Fisher–Yates variant with a multiply-shift map (no division) and a branch-free scatter, and sorts key positions with a sorting network. XOF usage, control flow and memory addresses now depend only on the dimensions. Known-answer digests were re-pinned; keys derived from a seed differ from 2.0.0-dev.3. |
+| **Medium** | SLSS key generation and encryption gathered rows of `A` and entries of `T` at secret positions (documented in 2.0.0-dev.3 as a cache-timing channel, but the encryption half runs inside decapsulation). (1, 2, 5) | Both are dense products that touch every coefficient with a multiply. Cost: KEM key generation 51 / 99 ms instead of 16.5 / 33.5, encapsulation 1.5 / 2.2 ms instead of 0.8 / 0.8, decapsulation 2.3 / 2.4 ms instead of 2.2 / 1.4; see BenchmarkReport.md. |
 | **Medium** | `core.isPrime` overflowed `i*i` and hung for ring lengths near `MaxInt` (reachable through `ValidateParams` and KEM key generation); on 32-bit it answered wrongly. (4) | `i <= n/i`; ring lengths are bounded by 2^24 before the test. Regression test `TestValidateCodeParams_HugeN`. |
 | **Medium** | `kem.GenerateKeyPairFromSeed` accepted any dimensions under a valid level label (n = m = 16 keys with a MOS-128 header). (4) | Parameters must equal the published set for their level in key generation, encapsulation, decapsulation and serialization (`sign` already did this). |
 | **Medium** | CLI: `--output` opened existing files with `O_TRUNC` and chmod'ed afterwards (secret key briefly world-readable if the file was 0644; symlinks followed; TOCTOU); the 100 MiB input limit was a `Stat` check bypassed by `/dev/zero`, FIFOs and growing files (out-of-memory); stdin was silently truncated at the limit; `-m ""` fell back to stdin; misspelled options were ignored (`--ouput` printed the secret key to stdout, `--levle 256` produced a MOS-128 key); `--iterations 1x` was accepted. (4, 5, 6) | Atomic write through a 0600 temporary file and rename; the limit applies to bytes read, over-limit input is an error; empty option values are literal; unknown options and stray arguments exit 2; strict integer parsing. Regression tests in `cmd/k-mosaic-cli/validation_pass_test.go`. |
@@ -508,9 +508,9 @@ Every row was confirmed by running code before it was fixed.
 | Low | Validation gaps between `core` and the components (UOV n ≤ 512, SLH-DSA a ≤ 16, h/d ≤ 16, k ≤ 64, d ≤ 64, lattice ω ≤ 255 because hint counts are bytes). (5) | `core` now enforces the component limits. |
 | Low | A secret key holding only its seed and hash decapsulated "successfully" to the rejection value. (4) | Secret key shape is validated; `ErrInvalidKey`. |
 | Low | `kem.Encrypt` had no plaintext cap; above about 64 GiB AES-GCM panics. (2) | `ErrMessageTooLarge` above the GCM limit. |
-| Info | Documentation: "3.x", "3.0.0 reintroduced", BenchmarkReport "describes 1.x", σ = 3.19, "discrete Gaussian", "at least as strong as its strongest component", "IND-CCA in the ROM" without a QROM caveat, "SUF-CMA from the nonce", "five independent reviewers", "attack programs kept as claims_test", "verified against an independent reference" with no test enforcing it, exit-code table, `-n` missing from the options table. (6) | Corrected in README, CLI.md, this document and the package comments. NIST ACVP vectors for SLH-DSA-SHAKE-128f/256f (key generation, deterministic and hedged signing through the internal and external "pure" interfaces with 1 and 4 workers, and verification including the modified-R, modified-FORS and modified-hypertree negatives) now run in CI, `problems/slhdsa/acvp_test.go`. |
+| Info | Documentation: "3.x", "3.0.0 reintroduced" (old names of 2.0.0-dev.2), BenchmarkReport "describes 1.x", σ = 3.19, "discrete Gaussian", "at least as strong as its strongest component", "IND-CCA in the ROM" without a QROM caveat, "SUF-CMA from the nonce", "five independent reviewers", "attack programs kept as claims_test", "verified against an independent reference" with no test enforcing it, exit-code table, `-n` missing from the options table. (6) | Corrected in README, CLI.md, this document and the package comments. NIST ACVP vectors for SLH-DSA-SHAKE-128f/256f (key generation, deterministic and hedged signing through the internal and external "pure" interfaces with 1 and 4 workers, and verification including the modified-R, modified-FORS and modified-hypertree negatives) now run in CI, `problems/slhdsa/acvp_test.go`. |
 
-### 6.3 Side-channel state after 4.1.0
+### 6.3 Side-channel state after 2.0.0-dev.4
 
 What is constant-time by construction (control flow and memory addresses
 independent of secret data), and what was measured:
@@ -518,8 +518,8 @@ independent of secret data), and what was measured:
 - **KEM decapsulation path.** SLSS decryption (dense inner products), the
   code component's Reed-Solomon and Reed-Muller decoders (measured medians
   42,306 / 42,279 / 42,308 / 42,297 ns for 0 / 29 / 30 / 90 errors), the
-  re-encryption samplers and products (4.1), the FO comparison and selection
-  (branch-free since 4.1). Over 1,500 interleaved samples per class, the
+  re-encryption samplers and products (2.0.0-dev.4), the FO comparison and selection
+  (branch-free since 2.0.0-dev.4). Over 1,500 interleaved samples per class, the
   five full-path outcomes (valid, SLSS mismatch, code mismatch, decoding
   failure, random ciphertext) were indistinguishable on this machine
   (medians 1192–1228 µs); the two public early rejections (shape, padding)
@@ -594,7 +594,7 @@ evidence of absence beyond what was tried.
 - **Resources**: peak RSS 11 / 16 MB for KEM key generation (MOS-128/256)
   and 40 MB for MOS-256 signing key generation; no goroutine leaks.
 
-### 6.5 Still open after 4.1.0
+### 6.5 Still open after 2.0.0-dev.4
 
 *(Superseded by §7.3 for the side-channel, cached-hash and dead-code
 items; the rest still stands.)*
@@ -615,14 +615,14 @@ items; the rest still stands.)*
 - **Zeroization** is best-effort; Go's runtime copies and the hash and AES
   internals are not wiped.
 - **Cost**: constant-time sampling and dense products made KEM key
-  generation about 3× slower and encapsulation about 2× slower than 4.0.0;
+  generation about 3× slower and encapsulation about 2× slower than 2.0.0-dev.3;
   there is no SIMD.
 - **Cached hashes** in the public-key structs are trusted; hand-edited key
   structs are the caller's responsibility.
 
 ### 6.6 Claim: "bug free"
 
-**Verdict: not a claim this or any review can make, and 4.0.0 was not.**
+**Verdict: not a claim this or any review can make, and 2.0.0-dev.3 was not.**
 The pass found one hang, one validation hole, three CLI defects with
 security consequences, a timing channel in the one place that matters most
 (FO re-encryption), a 32-bit truncation, a vacuous test and a dozen smaller
@@ -636,9 +636,9 @@ be used where a failure would matter.
 
 ---
 
-## 7. Version 4.2.0: closing the open items
+## 7. Version 2.0.0: closing the open items
 
-4.2.0 addresses every item of §6.5 that code can address. No key, ciphertext
+2.0.0 addresses every item of §6.5 that code can address. No key, ciphertext
 or signature changed: for fixed seeds, the UOV keys and signatures are
 pinned by digests in `problems/uov/ct_test.go`, the composite KEM and
 signature keys and a deterministic encapsulation by `kem/kat_test.go` and
@@ -667,7 +667,7 @@ generation 4.9 / 69 → 8.6 / 172 ms, which is hidden inside the parallel
 composite signing but visible in composite key generation and in loading a
 MOS-256 signing key (58 → 84 ms).
 
-### 7.3 Still open after 4.2.0
+### 7.3 Still open after 2.0.0
 
 - **Not externally reviewed.** Everything in §6 and §7 was done inside this
   project.

@@ -13,9 +13,13 @@ list what remains open.
 
 | Version | Status |
 | ------- | ------ |
-| 4.2.x   | Current. Receives fixes. |
-| 4.0.x, 4.1.x | Superseded. 4.0.0 has a timing oracle in decapsulation (§6.2); 4.1.0 has cache-timing channels in the code component and in UOV signing (§7.1). Upgrade. |
-| < 4.0   | Broken by design (the KEM shared secret was recoverable from public data, and 1.x signatures were forgeable with the public key). Keys, ciphertexts and signatures from these versions must be discarded; 4.x refuses to parse them. The `v1.0.x` tags of the old module path still exist; the current code lives under the `/v4` module path. |
+| 2.0.x   | Current. Receives fixes. |
+| 1.x     | Broken by design (the KEM shared secret was recoverable from public data, and signatures were forgeable with the public key). Keys, ciphertexts and signatures from these versions must be discarded; 2.x refuses to parse them. The `v1.0.x` tags of the old module path still exist; the current code lives under the `/v2` module path. |
+
+The development revisions 2.0.0-dev.1 to 2.0.0-dev.4 were never tagged or
+released. Their defects (including a decapsulation timing oracle in dev.3,
+§6.2, and cache-timing channels in dev.4, §7.1) are recorded in
+SECURITY_ASSESSMENT.md.
 
 ## Reporting a vulnerability
 
@@ -35,7 +39,7 @@ The library makes specific, bounded claims; a report that shows one of them
 false is a valid finding:
 
 - No encoding changes without a wire-format version bump; the format is
-  version 4. A change to the seed-to-key derivation (as in 4.1.0) is
+  version 4. A change to the seed-to-key derivation (as in 2.0.0-dev.4) is
   stated in CHANGELOG.md and pinned by known-answer tests.
 - Every operation on secret data is written to be constant-time in the
   library's own code (§7.1 and §7.3 state the boundary of that claim).

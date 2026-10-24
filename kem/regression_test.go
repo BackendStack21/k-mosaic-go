@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 // TestDecapsulateMalformedCiphertextShape verifies that a ciphertext whose

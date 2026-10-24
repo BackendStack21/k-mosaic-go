@@ -117,7 +117,7 @@ func runGoSnippet(t *testing.T, root, doc string, s snippet) {
 		return
 	}
 	dir := t.TempDir()
-	goMod := fmt.Sprintf("module docsnippet\n\ngo 1.24\n\nrequire github.com/BackendStack21/k-mosaic-go/v4 v4.0.0\n\nreplace github.com/BackendStack21/k-mosaic-go/v4 => %s\n", root)
+	goMod := fmt.Sprintf("module docsnippet\n\ngo 1.24\n\nrequire github.com/BackendStack21/k-mosaic-go/v2 v2.0.0\n\nreplace github.com/BackendStack21/k-mosaic-go/v2 => %s\n", root)
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o600); err != nil {
 		t.Fatal(err)
 	}

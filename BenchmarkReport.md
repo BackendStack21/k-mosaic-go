@@ -1,14 +1,14 @@
-# kMOSAIC Go Benchmark Report (4.2.0)
+# kMOSAIC Go Benchmark Report (2.0.0)
 
 **Date:** October 22, 2026
 **Platform:** Linux, 4 vCPU Intel Xeon @ 2.80 GHz (shared container; numbers vary by ±30% between runs)
 **Go:** 1.24
 **Command:** `go test ./kem/ ./sign/ ./problems/... -run '^$' -bench . -benchmem -benchtime=5x`
 
-Reports for versions before 4.0.0 were deleted: 1.x measured a signature that
-was a hash of the secret key, and 3.0 carried a ciphertext field that leaked
-the KEM shares. Neither described a working scheme. The 4.1.0 and 4.2.0
-numbers differ from 4.0.0 where secret-dependent operations were made
+Reports for earlier designs were deleted: 1.x measured a signature that
+was a hash of the secret key, and 2.0.0-dev.2 carried a ciphertext field that
+leaked the KEM shares. Neither described a working scheme. The 2.0.0-dev.4
+and 2.0.0 numbers differ from 2.0.0-dev.3 where secret-dependent operations were made
 constant-time (SECURITY_ASSESSMENT.md §6.2 and §7): KEM key generation
 16.5 / 33.5 → 56 / 113 ms, encapsulation 0.8 / 0.8 → 2.1 / 2.0 ms,
 decapsulation 2.2 / 1.4 → 6.7 / 7.2 ms. Signatures are unchanged within
@@ -31,7 +31,7 @@ UOV key expansion).
 
 Memory is bytes allocated per operation; deserialization expands the public
 matrices, which dominate the in-memory size of the keys. Verify's code did
-not change between 4.1.0 (3.7 / 4.4 ms) and this run; the difference is the
+not change between 2.0.0-dev.4 (3.7 / 4.4 ms) and this run; the difference is the
 shared machine's load.
 
 ## Component operations
@@ -76,7 +76,7 @@ data-dependent branch.
 
 - **KEM KeyGen** is now the dense product `T = A·S` over every coefficient
   (151M / 340M multiply-adds, register-blocked, split across cores) plus the
-  sort-based constant-time sampling of 256 secret columns. The 4.0 version
+  sort-based constant-time sampling of 256 secret columns. The 2.0.0-dev.3 version
   gathered only the 192 / 288 non-zero rows per column and leaked their
   positions through the cache.
 - **KEM Encapsulate / Decapsulate** are dominated by the dense `Aᵀ·r`

@@ -1,12 +1,22 @@
 # Changelog
 
-All notable changes to the Go implementation. Dates are commit dates (UTC);
-the wire format is version 4 throughout 4.x. Since 4.2.0 the module path is
-`github.com/BackendStack21/k-mosaic-go/v4`.
+All notable changes to the Go implementation. Dates are commit dates (UTC).
+Since 2.0.0 the module path is `github.com/BackendStack21/k-mosaic-go/v2`.
+The wire format is version 4 throughout 2.x; it and the `-v4` domain strings
+name the protocol revision, which is versioned separately from the release.
 
-## 4.2.0 — 2026-10-22
+## 2.0.0 — 2026-10-24
 
-Security hardening; no key, ciphertext or signature changed.
+Breaking redesign of the 1.x scheme: the KEM composes unstructured LWE with
+quasi-cyclic syndrome decoding, the signature composes a lattice signature
+over unstructured matrices, UOV and SLH-DSA, and every serialized object uses
+a self-describing wire format. 1.x keys, ciphertexts and signatures are
+rejected. The module path moves to `/v2`.
+
+2.0.0 was developed through four untagged revisions, listed below as
+2.0.0-dev.1 to 2.0.0-dev.4; `SECURITY_ASSESSMENT.md` refers to them by these
+names. Changes since 2.0.0-dev.4 (security hardening; no key, ciphertext or
+signature changed):
 
 - The code component's sparse ring multiplication is memory-oblivious: a
   masked barrel shifter selects each window over fixed-length buffers and the
@@ -21,13 +31,14 @@ Security hardening; no key, ciphertext or signature changed.
 - Hash intermediates on the KEM path are zeroized; the unused floating-point
   Gaussian sampler was removed.
 - Cost: KEM decapsulation about 7 ms (was 2.3 ms); UOV key generation 2×.
-- Module path moved to `/v4`; the entropy check on lattice seeds was removed.
+- The entropy check on lattice seeds was removed.
 - `SECURITY_ASSESSMENT.md` §7 records the changes and arguments.
 
-## 4.1.0 — 2026-10-22
+### 2.0.0-dev.4 — 2026-10-22
 
 Validation pass by seven adversarial reviews; no cryptographic break found;
-every defect found was fixed. **Keys derived from a seed differ from 4.0.0**
+every defect found was fixed. **Keys derived from a seed differ from
+2.0.0-dev.3**
 because the sparse-vector samplers changed.
 
 - Constant-time sparse samplers (sort-based for SLSS, Sendrier's method for
@@ -49,9 +60,10 @@ because the sparse-vector samplers changed.
   IND-CCA proof is classical-ROM; strong unforgeability is assumed of the
   components; historical sections of the assessment are marked.
 
-## 4.0.0 — 2026-10-22
+### 2.0.0-dev.3 — 2026-10-22
 
-Breaking release after an internal five-reviewer review.
+Breaking revision after an internal five-reviewer review; introduces
+protocol revision 4.
 
 - Removed the ciphertext "proof" field that leaked the KEM shares in every
   earlier version; the ciphertext is exactly the two component ciphertexts.
@@ -66,9 +78,15 @@ Breaking release after an internal five-reviewer review.
 - Rewritten CLI with documented exit codes and file modes; every
   documentation snippet executed by the tests.
 
-## 3.0.0 and earlier
+### 2.0.0-dev.1 and 2.0.0-dev.2
 
-Do not use. 1.x: the KEM shared secret was recoverable from the public key
-and ciphertext, and signatures were forgeable with the public key. 2.0.0 and
-3.0.0: the ciphertext carried a field that revealed the KEM shares. See
-`SECURITY_ASSESSMENT.md` §1–§5.
+Do not use. 2.0.0-dev.1 replaced the broken 1.x KEM encryption and signature;
+2.0.0-dev.2 redesigned the scheme as a composition of independent hard
+problems. In both, the ciphertext carried a field that revealed the KEM
+shares. See `SECURITY_ASSESSMENT.md` §3–§5.
+
+## 1.x
+
+Do not use. The KEM shared secret was recoverable from the public key and
+ciphertext, and signatures were forgeable with the public key. See
+`SECURITY_ASSESSMENT.md` §1–§2.

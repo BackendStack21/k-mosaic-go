@@ -5,7 +5,7 @@ library: key generation, encapsulation, hybrid encryption and digital
 signatures from a terminal.
 
 > **Warning:** kMOSAIC is experimental and unreviewed. Do not use it to protect
-> real secrets. Key, ciphertext and signature files from versions before 4.0.0
+> real secrets. Key, ciphertext and signature files from the 1.x releases
 > are not readable by this version, and those versions were insecure; see
 > [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
 
@@ -18,7 +18,7 @@ absent) and are not run.
 ## TL;DR
 
 ```sh
-go install github.com/BackendStack21/k-mosaic-go/v4/cmd/k-mosaic-cli@latest
+go install github.com/BackendStack21/k-mosaic-go/v2/cmd/k-mosaic-cli@latest
 ```
 
 ```bash
@@ -88,7 +88,7 @@ sudo mv k-mosaic-cli /usr/local/bin/   # or anywhere on your PATH
 ### With go install
 
 ```sh
-go install github.com/BackendStack21/k-mosaic-go/v4/cmd/k-mosaic-cli@latest
+go install github.com/BackendStack21/k-mosaic-go/v2/cmd/k-mosaic-cli@latest
 export PATH="$PATH:$(go env GOPATH)/bin"   # add to your shell profile
 ```
 
@@ -447,7 +447,7 @@ that matters.
 **"command not found"**: the binary is not on your PATH; run it as
 `./k-mosaic-cli` or add its directory to PATH.
 
-**"invalid key: wire: bad header"**: the file is not a 4.x object (an older
+**"invalid key: wire: bad header"**: the file is not a 2.x object (an older
 key file, a signing key passed where a KEM key is expected, or the wrong field
 extracted). Regenerate the key with this version.
 

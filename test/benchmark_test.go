@@ -3,9 +3,9 @@ package test
 import (
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/kem"
-	"github.com/BackendStack21/k-mosaic-go/v4/sign"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
 )
 
 // =============================================================================

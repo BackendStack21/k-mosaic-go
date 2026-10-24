@@ -2,7 +2,7 @@
 
 These scripts reproduce the figures quoted for the SLSS (unstructured LWE)
 component in `README.md` and `SECURITY_ASSESSMENT.md` §6.1. They were
-written for the 4.1.0 validation pass and are **not** the Lattice Estimator;
+written for the 2.0.0-dev.4 validation pass and are **not** the Lattice Estimator;
 treat the results as a sanity check with an uncertainty of about ±10 bits.
 
 - `lwe_est.py`: core-SVP cost (0.292·β classical, 0.265·β quantum) of the

@@ -4,9 +4,9 @@ import (
 	"encoding/hex"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/core"
-	"github.com/BackendStack21/k-mosaic-go/v4/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/core"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 // TestKnownAnswers pins the composite KEM: SHA3-256 digests of the
@@ -48,7 +48,7 @@ func TestKnownAnswers(t *testing.T) {
 	}
 }
 
-// Digests pinned on 2026-10-22 for version 4.2.0.
+// Digests pinned on 2026-10-22 for version 2.0.0.
 const (
 	KAT128PK = "4f56374e727295ec4e247eaf96b9037bf0764d2763af1a5f3602ed7b0597f299"
 	KAT128SK = "12151cc5331973e1ed180854ea98200b6bebc3d499df7e5295d9e91073eb3401"

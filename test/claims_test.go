@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go/v4"
-	"github.com/BackendStack21/k-mosaic-go/v4/kem"
-	"github.com/BackendStack21/k-mosaic-go/v4/problems/qcsd"
-	"github.com/BackendStack21/k-mosaic-go/v4/problems/slss"
-	"github.com/BackendStack21/k-mosaic-go/v4/sign"
-	"github.com/BackendStack21/k-mosaic-go/v4/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/problems/qcsd"
+	"github.com/BackendStack21/k-mosaic-go/v2/problems/slss"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 // These tests encode the attacks described in SECURITY_ASSESSMENT.md. Each
@@ -83,7 +83,7 @@ func TestClaim_ComponentsRequireSecretKeys(t *testing.T) {
 }
 
 // TestClaim_CiphertextCarriesNoShareInformation checks that a ciphertext is
-// exactly the two component ciphertexts: the 3.0 "proof" field, which masked
+// exactly the two component ciphertexts: the 2.0.0-dev.2 "proof" field, which masked
 // the shares with a hash of a public value and thereby leaked both shares,
 // is gone and nothing in the serialization is derived from the shares.
 func TestClaim_CiphertextCarriesNoShareInformation(t *testing.T) {
