@@ -1,3 +1,5 @@
+> **Deprecated and broken.** Every 1.x release is insecure (the KEM shared secret is recoverable from public data and signatures are forgeable) and has been retracted. Use [`github.com/BackendStack21/k-mosaic-go/v2`](https://github.com/BackendStack21/k-mosaic-go) instead.
+
 # kMOSAIC - Go Implementation
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
