@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/core"
+	"github.com/BackendStack21/k-mosaic-go/v2/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 // =============================================================================
@@ -146,35 +146,6 @@ func TestEntanglement_SecretShare(t *testing.T) {
 	}
 }
 
-func TestEntanglement_Commitment(t *testing.T) {
-	data := []byte("data")
-	comm, err := entanglement.CreateCommitment(data)
-	if err != nil {
-		t.Fatalf("CreateCommitment failed: %v", err)
-	}
-
-	if !entanglement.VerifyCommitment(data, comm.Commitment, comm.Opening) {
-		t.Error("VerifyCommitment failed")
-	}
-
-	// Test wrong data
-	if entanglement.VerifyCommitment([]byte("wrong"), comm.Commitment, comm.Opening) {
-		t.Error("VerifyCommitment passed with wrong data")
-	}
-
-	// Test wrong opening
-	wrongOpening := make([]byte, len(comm.Opening))
-	copy(wrongOpening, comm.Opening)
-	wrongOpening[0] ^= 1
-	if entanglement.VerifyCommitment(data, comm.Commitment, wrongOpening) {
-		t.Error("VerifyCommitment passed with wrong opening")
-	}
-}
-
-// =============================================================================
-// KEM Tests
-// =============================================================================
-
 func TestKEM_Failures(t *testing.T) {
 	kp, _ := kem.GenerateKeyPair(kmosaic.MOS_128)
 	res, _ := kem.Encapsulate(&kp.PublicKey)
@@ -193,7 +164,8 @@ func TestKEM_Failures(t *testing.T) {
 
 	// Test modified proof
 	badCT = res.Ciphertext
-	badCT.Proof[0] ^= 1
+	badCT.C2.U = append([]uint64{}, badCT.C2.U...)
+	badCT.C2.U[0] ^= 1
 	ss, err = kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &badCT)
 	if err != nil {
 		t.Fatalf("Decapsulate failed: %v", err)
@@ -244,16 +216,32 @@ func TestSign_Failures(t *testing.T) {
 		t.Error("Verify passed with wrong message")
 	}
 
-	// Test modified signature
-	badSig := *sig
-	badSig.Challenge[0] ^= 1
-	if sign.Verify(&kp.PublicKey, msg, &badSig) {
-		t.Error("Verify passed with modified challenge")
+	// Modify each component in turn (deep copies so one mutation cannot mask another).
+	clone := func() *kmosaic.MOSAICSignature {
+		return &kmosaic.MOSAICSignature{
+			Lattice: kmosaic.LatticeSignature{Challenge: append([]byte{}, sig.Lattice.Challenge...), Z: append([]int32{}, sig.Lattice.Z...)},
+			MQ:      kmosaic.MQSignature{S: append([]byte{}, sig.MQ.S...), Salt: append([]byte{}, sig.MQ.Salt...)},
+			Hash:    kmosaic.HashSignature{Data: append([]byte{}, sig.Hash.Data...)},
+		}
 	}
-
-	badSig = *sig
-	badSig.Response[0] ^= 1
-	if sign.Verify(&kp.PublicKey, msg, &badSig) {
-		t.Error("Verify passed with modified response")
+	badSig := clone()
+	badSig.Lattice.Challenge[0] ^= 1
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified lattice challenge")
+	}
+	badSig = clone()
+	badSig.Lattice.Z[0]++
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified lattice response")
+	}
+	badSig = clone()
+	badSig.MQ.S[0] ^= 1
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified MQ signature")
+	}
+	badSig = clone()
+	badSig.Hash.Data[100] ^= 1
+	if sign.Verify(&kp.PublicKey, msg, badSig) {
+		t.Error("Verify passed with modified hash signature")
 	}
 }

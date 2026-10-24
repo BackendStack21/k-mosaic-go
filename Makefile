@@ -1,7 +1,7 @@
 # kMOSAIC Go - Makefile
 # Post-quantum cryptographic library
 
-.PHONY: all build test test-verbose test-race bench bench-full coverage coverage-html lint fmt vet clean install help
+.PHONY: all build test test-verbose test-race test-386 test-timing bench bench-full bench-128 bench-256 coverage coverage-html lint fmt vet security deps verify update example doc clean install check ci help
 
 # Default target
 all: fmt vet test
@@ -61,7 +61,7 @@ coverage-html: coverage
 # Run linter (requires golangci-lint)
 lint:
 	@echo "Running linter..."
-	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	@which golangci-lint > /dev/null || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0)
 	golangci-lint run ./...
 
 # Format code
@@ -110,17 +110,29 @@ security:
 
 # Generate documentation
 doc:
-	@echo "Starting documentation server at http://localhost:6060"
-	@echo "Visit http://localhost:6060/pkg/github.com/BackendStack21/k-mosaic-go/"
-	godoc -http=:6060
+	@echo "Package documentation (use 'go doc -all ./<package>' for details):"
+	go doc ./...
 
 # Quick check (fmt + vet + test)
 check: fmt vet test
 	@echo "All checks passed!"
 
+# Run the parser tests on a 32-bit target
+test-386:
+	@echo "Vetting and testing with GOARCH=386..."
+	GOARCH=386 go vet ./...
+	GOARCH=386 go test ./internal/wire/ ./kem/ ./sign/ -run 'Deserialize|Truncated|Header|Huge'
+	GOARCH=386 go test ./core/ ./utils/ ./problems/qcsd/ ./problems/uov/ ./problems/slhdsa/
+
+# Timing-flatness tests: statistical, so they run one test binary at a time
+# on a quiet machine and are skipped unless KMOSAIC_TIMING_TESTS is set.
+test-timing:
+	@echo "Running timing-flatness tests sequentially..."
+	KMOSAIC_TIMING_TESTS=1 go test -p 1 -count=1 -run 'TimingFlat' ./problems/qcsd/ ./problems/uov/
+
 # CI pipeline simulation
-ci: deps fmt vet test-race coverage
-	@echo "CI pipeline completed!"
+ci: fmt vet lint test test-race test-386 test-timing
+	@echo "Local CI pipeline completed (the hosted CI additionally fuzzes the deserializers)"
 
 # Help
 help:

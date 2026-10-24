@@ -46,8 +46,9 @@ func FuzzDeserializeCiphertext(f *testing.F) {
 	f.Add(make([]byte, 16))
 	f.Add(make([]byte, 100))
 
+	f.Add([]byte{'k', 'M', 'O', 'S', 4, 3, 1, 0, 0xff, 0xff, 0xff, 0xff})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Should not panic, may return error
-		_, _ = DeserializeCiphertext(data)
+		_, _, _ = DeserializeCiphertext(data)
 	})
 }

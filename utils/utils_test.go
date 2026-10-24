@@ -93,26 +93,6 @@ func TestSecureRandomBytes(t *testing.T) {
 	}
 }
 
-func TestSampleGaussianVector(t *testing.T) {
-	n := 100
-	sigma := 3.0
-	seed := make([]byte, 32)
-	vec := SampleGaussianVector(seed, n, sigma)
-
-	if len(vec) != n {
-		t.Errorf("Expected length %d, got %d", n, len(vec))
-	}
-	// Basic statistical check (very loose)
-	mean := 0.0
-	for _, v := range vec {
-		mean += float64(v)
-	}
-	mean /= float64(n)
-	if mean < -3*sigma || mean > 3*sigma {
-		t.Errorf("Mean %f is too far from 0", mean)
-	}
-}
-
 func TestSampleVectorZq(t *testing.T) {
 	n := 100
 	q := 17

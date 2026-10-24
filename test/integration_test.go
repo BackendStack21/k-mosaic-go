@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 // TestKEMRoundtrip tests key generation, encapsulation, and decapsulation.
@@ -89,10 +89,10 @@ func TestKEMSerialization(t *testing.T) {
 			}
 
 			// Serialize ciphertext
-			ctBytes := kem.SerializeCiphertext(&result.Ciphertext)
+			ctBytes := kem.SerializeCiphertext(&result.Ciphertext, kp.PublicKey.Params)
 
 			// Deserialize ciphertext
-			ct2, err := kem.DeserializeCiphertext(ctBytes)
+			ct2, _, err := kem.DeserializeCiphertext(ctBytes)
 			if err != nil {
 				t.Fatalf("DeserializeCiphertext failed: %v", err)
 			}
@@ -126,9 +126,8 @@ func TestKEMInvalidCiphertext(t *testing.T) {
 
 	// Tamper with ciphertext (modify first byte of proof)
 	tamperedCT := result.Ciphertext
-	if len(tamperedCT.Proof) > 0 {
-		tamperedCT.Proof[0] ^= 0xFF
-	}
+	tamperedCT.C1.V = append([]int32{}, tamperedCT.C1.V...)
+	tamperedCT.C1.V[0] ^= 1
 
 	// Decapsulate tampered ciphertext
 	rejectedSecret, err := kem.Decapsulate(&kp.SecretKey, &kp.PublicKey, &tamperedCT)
@@ -257,7 +256,7 @@ func TestCLICommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Test key generation
 	t.Run("keygen", func(t *testing.T) {
@@ -455,10 +454,10 @@ func BenchmarkSign(b *testing.B) {
 	})
 }
 
-// TestDeterministicNIZK tests NIZK proof generation and validation with fixed seed
-// This allows reproducible debugging of NIZK proofs for cross-implementation comparison
-func TestDeterministicNIZK(t *testing.T) {
-	// Fixed seed for deterministic NIZK proof generation
+// TestDeterministicEncapsulationRoundTrip checks that a deterministic
+// encapsulation with a fixed ephemeral secret decapsulates correctly at
+// both levels.
+func TestDeterministicEncapsulationRoundTrip(t *testing.T) {
 	fixedSeed := []byte{
 		0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
 		0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -467,23 +466,21 @@ func TestDeterministicNIZK(t *testing.T) {
 	}
 
 	t.Run("MOS-128", func(t *testing.T) {
-		testDeterministicNIZKLevel(t, kmosaic.MOS_128, fixedSeed)
+		testDeterministicRoundTripLevel(t, kmosaic.MOS_128, fixedSeed)
 	})
 
 	t.Run("MOS-256", func(t *testing.T) {
-		testDeterministicNIZKLevel(t, kmosaic.MOS_256, fixedSeed)
+		testDeterministicRoundTripLevel(t, kmosaic.MOS_256, fixedSeed)
 	})
 }
 
-func testDeterministicNIZKLevel(t *testing.T, level kmosaic.SecurityLevel, fixedSeed []byte) {
+func testDeterministicRoundTripLevel(t *testing.T, level kmosaic.SecurityLevel, fixedSeed []byte) {
 	// Generate key pair
 	kp, err := kem.GenerateKeyPair(level)
 	if err != nil {
 		t.Fatalf("GenerateKeyPair failed: %v", err)
 	}
 
-	// Use fixed ephemeral secret for deterministic output
-	// This ensures the NIZK proof is reproducible for debugging
 	result, err := kem.EncapsulateDeterministic(&kp.PublicKey, fixedSeed)
 	if err != nil {
 		t.Fatalf("EncapsulateDeterministic failed: %v", err)
@@ -499,28 +496,22 @@ func testDeterministicNIZKLevel(t *testing.T, level kmosaic.SecurityLevel, fixed
 		t.Error("Shared secrets do not match after roundtrip")
 	}
 
-	// Write proof data for debugging
-	if os.Getenv("DEBUG_NIZK") != "" {
-		t.Logf("Level: %s", level)
-		t.Logf("Ciphertext: %x", result.Ciphertext)
-		t.Logf("SharedSecret: %x", result.SharedSecret)
-	}
 }
 
-// TestSecurityValidation_EmptyMessage tests that empty messages are rejected.
+// TestSecurityValidation_EmptyMessage tests that an empty message encrypts and
+// decrypts (AES-GCM authenticates it like any other).
 func TestSecurityValidation_EmptyMessage(t *testing.T) {
 	kp, err := kem.GenerateKeyPair(kmosaic.MOS_128)
 	if err != nil {
 		t.Fatalf("GenerateKeyPair failed: %v", err)
 	}
-
-	// Empty message should be rejected
-	_, err = kem.Encrypt(&kp.PublicKey, []byte{})
-	if err == nil {
-		t.Fatal("Expected error for empty message encryption")
+	em, err := kem.Encrypt(&kp.PublicKey, []byte{})
+	if err != nil {
+		t.Fatalf("Encrypt of empty message failed: %v", err)
 	}
-	if err.Error() != "plaintext cannot be empty" {
-		t.Errorf("Wrong error message: expected 'plaintext cannot be empty', got '%v'", err)
+	dec, err := kem.Decrypt(&kp.SecretKey, &kp.PublicKey, em)
+	if err != nil || len(dec) != 0 {
+		t.Fatalf("Decrypt of empty message failed: %v (%d bytes)", err, len(dec))
 	}
 }
 
@@ -626,9 +617,8 @@ func TestSecurityValidation_ConstantTimeComparison(t *testing.T) {
 
 	// Invalid ciphertext should still return a secret (implicit reject)
 	invalidCT := encResult.Ciphertext
-	if len(invalidCT.Proof) > 0 {
-		invalidCT.Proof[0] ^= 0xFF // Flip bits in proof
-	}
+	invalidCT.C2.V = append([]uint64{}, invalidCT.C2.V...)
+	invalidCT.C2.V[0] ^= 1
 	// Also corrupt the C1 component's U field
 	if len(invalidCT.C1.U) > 0 {
 		invalidCT.C1.U[0] ^= 1
@@ -669,7 +659,8 @@ func TestSecurityValidation_SignatureConstantTime(t *testing.T) {
 
 	// Modified signature should not verify
 	modSig := *sig
-	modSig.Challenge[0] ^= 0xFF
+	modSig.Lattice.Challenge = append([]byte{}, sig.Lattice.Challenge...)
+	modSig.Lattice.Challenge[0] ^= 0xFF
 	validMod := sign.Verify(&kp.PublicKey, message, &modSig)
 	if validMod {
 		t.Error("Modified signature passed verification")
@@ -733,20 +724,13 @@ func TestSecurityValidation_SecretKeyIntegrity(t *testing.T) {
 		t.Error("SLSS.S is empty")
 	}
 
-	// Verify TDD factors
-	if len(sk.TDD.Factors.A) == 0 {
-		t.Error("TDD.Factors.A is empty")
+	// Verify code component
+	if len(sk.Code.X) == 0 || len(sk.Code.Y) == 0 {
+		t.Error("code secret key is empty")
 	}
 
-	// Verify EGRW component
-	if len(sk.EGRW.Walk) == 0 {
-		t.Error("EGRW.Walk is empty")
-	}
-
-	t.Logf("Secret key integrity verified: Seed=%d, Hash=%d, SLSS=%d, TDD=(A=%d,B=%d,C=%d), EGRW=%d",
-		len(sk.Seed), len(sk.PublicKeyHash), len(sk.SLSS.S),
-		len(sk.TDD.Factors.A), len(sk.TDD.Factors.B), len(sk.TDD.Factors.C),
-		len(sk.EGRW.Walk))
+	t.Logf("Secret key integrity verified: Seed=%d, Hash=%d, SLSS=%d, Code=(x=%d words,y=%d words)",
+		len(sk.Seed), len(sk.PublicKeyHash), len(sk.SLSS.S), len(sk.Code.X), len(sk.Code.Y))
 }
 
 // BenchmarkMessageValidationOverhead benchmarks the cost of message validation

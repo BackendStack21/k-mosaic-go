@@ -1,36 +1,30 @@
-// Package utils provides utility functions for kMOSAIC.
-// This file contains safe arithmetic and allocation helpers to prevent
-// integer overflow and denial-of-service via large allocations.
-
+// Package utils provides the hashing, sampling, zeroization and
+// bounds-checking helpers shared by the kMOSAIC packages.
 package utils
+
+// This file holds the safe arithmetic and allocation helpers that keep
+// attacker-controlled lengths from causing integer overflow or large
+// allocations.
 
 import (
 	"errors"
 	"math"
 )
 
-// Maximum allowed lengths for various data types to prevent DoS via large allocations.
+// Upper bounds used by the allocation helpers below to refuse sizes that
+// no valid kMOSAIC object can reach.
 const (
-	// MaxVectorLength is the maximum allowed length for vectors (e.g., SLSS secret, TDD factors).
+	// MaxVectorLength bounds the length of a vector (e.g. an SLSS secret column).
 	MaxVectorLength = 1 << 20 // 1M elements
 
-	// MaxMatrixElements is the maximum allowed number of elements in a matrix.
+	// MaxMatrixElements bounds the number of elements of a matrix.
 	MaxMatrixElements = 1 << 24 // 16M elements
 
-	// MaxTensorElements is the maximum allowed number of elements in a tensor.
-	MaxTensorElements = 1 << 26 // 64M elements
-
-	// MaxFactorCount is the maximum allowed number of factors (e.g., TDD rank).
-	MaxFactorCount = 1000
-
-	// MaxMessageSize is the maximum allowed message size in bytes.
+	// MaxMessageSize bounds a message handled by the helpers in this package.
 	MaxMessageSize = 1 << 20 // 1MB
 
-	// MaxPayloadLength is the maximum allowed payload length for serialized data.
+	// MaxPayloadLength bounds the length of any serialized payload.
 	MaxPayloadLength = 1 << 28 // 256MB
-
-	// MaxWalkLength is the maximum allowed walk length for EGRW.
-	MaxWalkLength = 1 << 16 // 64K steps
 )
 
 var (
@@ -124,13 +118,16 @@ func CheckPositive(value int, name string) error {
 // SafeReadLength reads a uint32 length from data at offset, validates it, and returns the value.
 // Returns error if not enough bytes available or length exceeds maxAllowed.
 func SafeReadLength(data []byte, offset, maxAllowed int) (length int, newOffset int, err error) {
-	if offset < 0 || offset+4 > len(data) {
+	if maxAllowed < 0 {
+		return 0, offset, ErrInvalidLength
+	}
+	if offset < 0 || offset > len(data)-4 {
 		return 0, offset, errors.New("truncated length field")
 	}
-	// Read as uint32 first
-	raw := uint32(data[offset]) | uint32(data[offset+1])<<8 | uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
-	// Check against max allowed (also handles potential negative after int cast on 32-bit)
-	if raw > uint32(maxAllowed) || (maxAllowed > math.MaxInt32 && int(raw) < 0) {
+	raw := uint64(data[offset]) | uint64(data[offset+1])<<8 | uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24
+	// Compare in 64 bits so that neither a large maxAllowed nor a 32-bit int
+	// can truncate the check.
+	if raw > uint64(maxAllowed) || raw > uint64(math.MaxInt) {
 		return 0, offset, ErrExceedsLimit
 	}
 	return int(raw), offset + 4, nil

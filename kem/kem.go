@@ -1,963 +1,660 @@
-// Package kem implements the Key Encapsulation Mechanism for kMOSAIC.
+// Package kem implements the kMOSAIC Key Encapsulation Mechanism.
+//
+// Encapsulation splits a 32-byte ephemeral secret into two XOR shares and
+// encrypts one with the SLSS component (unstructured LWE with sparse ternary
+// secrets) and one with the code component (quasi-cyclic syndrome decoding,
+// the HQC construction). Recovering the ephemeral secret requires both
+// shares, so the scheme is IND-CPA as long as either component is, and the
+// Fujisaki-Okamoto transform (derandomization on the public key, re-encryption
+// check, implicit rejection) lifts it to IND-CCA in the classical
+// random-oracle model (quantum-accessible ROM security follows only from the
+// known non-tight FO results).
+//
+// Decapsulation rejects malformed shapes early (shapes are public); for
+// every well-shaped ciphertext it performs both decryptions, the
+// re-encryption and the comparison with the same control flow and the same
+// memory access pattern: the component samplers are constant-time, the
+// SLSS products are dense and the code component's ring multiplication is
+// memory-oblivious (see package qcsd).
+//
+// Every serialized object starts with the self-describing header of
+// internal/wire, so deserialization needs no parameters.
 package kem
 
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"encoding/binary"
-	"errors"
+	"crypto/subtle"
 	"fmt"
 	"sync"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/core"
-	"github.com/BackendStack21/k-mosaic-go/entanglement"
-	"github.com/BackendStack21/k-mosaic-go/problems/egrw"
-	"github.com/BackendStack21/k-mosaic-go/problems/slss"
-	"github.com/BackendStack21/k-mosaic-go/problems/tdd"
-	"github.com/BackendStack21/k-mosaic-go/utils"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/core"
+	"github.com/BackendStack21/k-mosaic-go/v2/entanglement"
+	"github.com/BackendStack21/k-mosaic-go/v2/internal/wire"
+	"github.com/BackendStack21/k-mosaic-go/v2/problems/qcsd"
+	"github.com/BackendStack21/k-mosaic-go/v2/problems/slss"
+	"github.com/BackendStack21/k-mosaic-go/v2/utils"
 )
 
 const (
-	DomainSLSS           = "kmosaic-kem-slss-v1"
-	DomainTDD            = "kmosaic-kem-tdd-v1"
-	DomainEGRW           = "kmosaic-kem-egrw-v1"
-	DomainSharedSecret   = "kmosaic-kem-ss-v1"
-	DomainEncKey         = "kmosaic-enc-key-v1"
-	DomainNonce          = "kmosaic-nonce-v1"
-	DomainImplicitReject = "kmosaic-kem-reject-v1"
+	DomainSLSS         = "kmosaic-kem-slss-v4"
+	DomainCode         = "kmosaic-kem-code-v4"
+	DomainSharedSecret = "kmosaic-kem-ss-v4"
+	DomainEncKey       = "kmosaic-enc-key-v4"
+	DomainNonce        = "kmosaic-nonce-v4"
+	DomainRejectKey    = "kmosaic-kem-reject-key-v4"
+	DomainReject       = "kmosaic-kem-reject-v4"
+
+	// SeedSize is the exact size of a key-generation seed.
+	SeedSize = 32
+	// SharedSecretSize is the size of the shared secret and of the ephemeral secret.
+	SharedSecretSize = 32
+
+	shareSize = 32
+	numShares = 2
+
+	// MaxComponentSize bounds any length prefix read during deserialization.
+	MaxComponentSize = 16 * 1024 * 1024
+
+	// MaxPlaintextSize is the largest plaintext Encrypt accepts: the
+	// AES-GCM limit of 2^32−2 blocks.
+	MaxPlaintextSize = (1<<32 - 2) * 16
 )
 
-// GenerateKeyPair generates a kMOSAIC key pair.
+// GenerateKeyPair generates a kMOSAIC key pair for the given security level.
 func GenerateKeyPair(level kmosaic.SecurityLevel) (*kmosaic.MOSAICKeyPair, error) {
 	params, err := core.GetParams(level)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
 	}
-	if err := core.ValidateParams(params); err != nil {
-		return nil, err
-	}
-
-	seed, err := utils.SecureRandomBytes(32)
+	seed, err := utils.SecureRandomBytes(SeedSize)
 	if err != nil {
 		return nil, err
 	}
-
-	kp, err := GenerateKeyPairFromSeed(params, seed)
-	utils.Zeroize(seed)
-	return kp, err
+	defer utils.Zeroize(seed)
+	return GenerateKeyPairFromSeed(params, seed)
 }
 
-// GenerateKeyPairFromSeed generates a deterministic key pair from seed.
+// GenerateKeyPairFromSeed deterministically generates a key pair from a
+// 32-byte seed.
 func GenerateKeyPairFromSeed(params kmosaic.MOSAICParams, seed []byte) (*kmosaic.MOSAICKeyPair, error) {
-	if len(seed) < 32 {
-		return nil, errors.New("seed must be at least 32 bytes")
+	if len(seed) != SeedSize {
+		return nil, fmt.Errorf("%w: seed must be exactly %d bytes", kmosaic.ErrInvalidKey, SeedSize)
 	}
-	if err := utils.ValidateSeedEntropy(seed); err != nil {
+	if err := core.ValidateParams(params); err != nil {
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
+	}
+	if err := checkKnownParams(params); err != nil {
 		return nil, err
 	}
 
-	// Derive component seeds
 	slssSeed := utils.HashWithDomain(DomainSLSS, seed)
-	tddSeed := utils.HashWithDomain(DomainTDD, seed)
-	egrwSeed := utils.HashWithDomain(DomainEGRW, seed)
+	codeSeed := utils.HashWithDomain(DomainCode, seed)
 	defer func() {
 		utils.Zeroize(slssSeed)
-		utils.Zeroize(tddSeed)
-		utils.Zeroize(egrwSeed)
+		utils.Zeroize(codeSeed)
 	}()
 
-	// Generate component keys in parallel
 	var wg sync.WaitGroup
 	var slssKP *kmosaic.SLSSKeyPair
-	var tddKP *kmosaic.TDDKeyPair
-	var egrwKP *kmosaic.EGRWKeyPair
-	var slssErr, tddErr, egrwErr error
-
-	wg.Add(3)
+	var codeKP *kmosaic.CodeKeyPair
+	var slssErr, codeErr error
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		slssKP, slssErr = slss.KeyGen(params.SLSS, slssSeed)
 	}()
 	go func() {
 		defer wg.Done()
-		tddKP, tddErr = tdd.KeyGen(params.TDD, tddSeed)
-	}()
-	go func() {
-		defer wg.Done()
-		egrwKP, egrwErr = egrw.KeyGen(params.EGRW, egrwSeed)
+		codeKP, codeErr = qcsd.KeyGen(params.Code, codeSeed)
 	}()
 	wg.Wait()
-
 	if slssErr != nil {
-		return nil, slssErr
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, slssErr)
 	}
-	if tddErr != nil {
-		return nil, tddErr
+	if codeErr != nil {
+		utils.ZeroizeInt8(slssKP.SecretKey.S)
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, codeErr)
 	}
-	if egrwErr != nil {
-		return nil, egrwErr
-	}
-
-	// Compute binding
-	slssBytes := slss.SerializePublicKey(slssKP.PublicKey)
-	tddBytes := tdd.SerializePublicKey(tddKP.PublicKey)
-	egrwBytes := egrw.SerializePublicKey(egrwKP.PublicKey)
-	binding := entanglement.ComputeBinding(slssBytes, tddBytes, egrwBytes)
 
 	publicKey := kmosaic.MOSAICPublicKey{
-		SLSS:    slssKP.PublicKey,
-		TDD:     tddKP.PublicKey,
-		EGRW:    egrwKP.PublicKey,
-		Binding: binding,
-		Params:  params,
+		SLSS:   slssKP.PublicKey,
+		Code:   codeKP.PublicKey,
+		Params: params,
 	}
-
-	publicKeyHash := utils.SHA3256(SerializePublicKey(&publicKey))
+	publicKey.Binding = entanglement.ComputeBinding(
+		slss.SerializePublicKey(publicKey.SLSS),
+		qcsd.SerializePublicKey(publicKey.Code, params.Code),
+	)
+	publicKey.Hash = utils.SHA3256(SerializePublicKey(&publicKey))
 
 	secretKey := kmosaic.MOSAICSecretKey{
 		SLSS:          slssKP.SecretKey,
-		TDD:           tddKP.SecretKey,
-		EGRW:          egrwKP.SecretKey,
+		Code:          codeKP.SecretKey,
 		Seed:          append([]byte{}, seed...),
-		PublicKeyHash: publicKeyHash,
+		PublicKeyHash: append([]byte{}, publicKey.Hash...),
 	}
-
-	return &kmosaic.MOSAICKeyPair{
-		PublicKey: publicKey,
-		SecretKey: secretKey,
-	}, nil
+	return &kmosaic.MOSAICKeyPair{PublicKey: publicKey, SecretKey: secretKey}, nil
 }
 
-// Encapsulate generates a shared secret and ciphertext.
+// checkKnownParams rejects any parameter set that is not exactly the
+// published set for its level, so that no caller can run the scheme with
+// weakened dimensions under a valid header.
+func checkKnownParams(params kmosaic.MOSAICParams) error {
+	if err := core.ValidateParams(params); err != nil {
+		return fmt.Errorf("%w: %v", kmosaic.ErrInvalidParams, err)
+	}
+	known, err := core.GetParams(params.Level)
+	if err != nil || known != params {
+		return fmt.Errorf("%w: parameters do not match level %q", kmosaic.ErrInvalidParams, params.Level)
+	}
+	if slss.MessageSize(params.SLSS) != shareSize || qcsd.MessageSize(params.Code) != shareSize {
+		return fmt.Errorf("%w: components must encrypt 32-byte shares", kmosaic.ErrInvalidParams)
+	}
+	return nil
+}
+
+// PublicKeyHash returns the cached hash of pk, computing it if necessary.
+// The cache is used by Encapsulate (a wrong cache only mis-derandomizes the
+// caller's own encapsulation); Decapsulate recomputes the hash from the
+// key's contents and rejects a key whose cache disagrees, so an edited key
+// struct cannot be used as a key-mismatch oracle.
+func PublicKeyHash(pk *kmosaic.MOSAICPublicKey) []byte {
+	if pk == nil {
+		return nil
+	}
+	if len(pk.Hash) == 32 {
+		return pk.Hash
+	}
+	return utils.SHA3256(SerializePublicKey(pk))
+}
+
+// Encapsulate generates a shared secret and ciphertext under pk.
 func Encapsulate(pk *kmosaic.MOSAICPublicKey) (*kmosaic.EncapsulationResult, error) {
-	ephemeralSecret, err := utils.SecureRandomBytes(32)
+	ephemeralSecret, err := utils.SecureRandomBytes(SharedSecretSize)
 	if err != nil {
 		return nil, err
 	}
-	result, err := EncapsulateDeterministic(pk, ephemeralSecret)
-	utils.Zeroize(ephemeralSecret)
-	return result, err
+	defer utils.Zeroize(ephemeralSecret)
+	return EncapsulateDeterministic(pk, ephemeralSecret)
 }
 
-// EncapsulateDeterministic performs deterministic encapsulation.
+// EncapsulateDeterministic encapsulates a caller-chosen 32-byte ephemeral
+// secret. It exists for known-answer tests and for the re-encryption step of
+// decapsulation. Callers must never reuse an ephemeral secret, under one key
+// or across keys: whoever can decapsulate one of the resulting ciphertexts
+// recovers the ephemeral secret and with it every other shared secret (and
+// AES-GCM key and nonce) derived from it. Use Encapsulate.
 func EncapsulateDeterministic(pk *kmosaic.MOSAICPublicKey, ephemeralSecret []byte) (*kmosaic.EncapsulationResult, error) {
-	if len(ephemeralSecret) != 32 {
-		return nil, errors.New("ephemeral secret must be 32 bytes")
+	if pk == nil {
+		return nil, fmt.Errorf("%w: nil public key", kmosaic.ErrInvalidKey)
 	}
-
+	if len(ephemeralSecret) != SharedSecretSize {
+		return nil, fmt.Errorf("%w: ephemeral secret must be %d bytes", kmosaic.ErrInvalidParams, SharedSecretSize)
+	}
 	params := pk.Params
-
-	// Derive randomness
-	randomness := utils.HashConcat(ephemeralSecret, pk.Binding)
-
-	// Split secret into 3 shares
-	shares, err := entanglement.SecretShareDeterministic(ephemeralSecret, 3, randomness)
-	if err != nil {
+	if err := checkKnownParams(params); err != nil {
 		return nil, err
 	}
 
-	// Encrypt shares in parallel
-	var wg sync.WaitGroup
-	var c1 *kmosaic.SLSSCiphertext
-	var c2 *kmosaic.TDDCiphertext
-	var c3 *kmosaic.EGRWCiphertext
-	var err1, err2, err3 error
+	// Derandomize on the secret and the public key hash (FO transform).
+	randomness := utils.HashConcat(ephemeralSecret, PublicKeyHash(pk))
+	defer utils.Zeroize(randomness)
+
+	shares, err := entanglement.SecretShareDeterministic(ephemeralSecret, numShares, randomness)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		for _, s := range shares {
+			utils.Zeroize(s)
+		}
+	}()
 
 	rand1 := utils.HashWithDomain(DomainSLSS+"-rand", randomness)
-	rand2 := utils.HashWithDomain(DomainTDD+"-rand", randomness)
-	rand3 := utils.HashWithDomain(DomainEGRW+"-rand", randomness)
+	rand2 := utils.HashWithDomain(DomainCode+"-rand", randomness)
+	defer func() {
+		utils.Zeroize(rand1)
+		utils.Zeroize(rand2)
+	}()
 
-	wg.Add(3)
+	var wg sync.WaitGroup
+	var c1 *kmosaic.SLSSCiphertext
+	var c2 *kmosaic.CodeCiphertext
+	var err1, err2 error
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		c1, err1 = slss.Encrypt(pk.SLSS, shares[0], params.SLSS, rand1)
 	}()
 	go func() {
 		defer wg.Done()
-		c2, err2 = tdd.Encrypt(pk.TDD, shares[1], params.TDD, rand2)
-	}()
-	go func() {
-		defer wg.Done()
-		c3, err3 = egrw.Encrypt(pk.EGRW, shares[2], params.EGRW, rand3)
+		c2, err2 = qcsd.Encrypt(pk.Code, shares[1], params.Code, rand2)
 	}()
 	wg.Wait()
-
 	if err1 != nil {
-		return nil, err1
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err1)
 	}
 	if err2 != nil {
-		return nil, err2
-	}
-	if err3 != nil {
-		return nil, err3
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err2)
 	}
 
-	// Generate NIZK proof (must happen BEFORE zeroizing shares and randomness)
-	ciphertextHashes := [][]byte{
-		utils.SHA3256(serializeSLSSCiphertext(c1)),
-		utils.SHA3256(serializeTDDCiphertext(c2)),
-		utils.SHA3256(serializeEGRWCiphertext(c3)),
+	ciphertext := kmosaic.MOSAICCiphertext{C1: *c1, C2: *c2}
+	ctBytes := SerializeCiphertext(&ciphertext, params)
+	if ctBytes == nil {
+		return nil, fmt.Errorf("%w: ciphertext could not be serialized", kmosaic.ErrInvalidKey)
 	}
-	proof := entanglement.GenerateNIZKProof(
-		ephemeralSecret,
-		shares,
-		ciphertextHashes,
-		utils.HashWithDomain(DomainSLSS+"-nizk", randomness),
-	)
-
-	// Zeroize shares and randomness after NIZK proof generation
-	for _, share := range shares {
-		utils.Zeroize(share)
-	}
-	utils.Zeroize(randomness)
-
-	ciphertext := kmosaic.MOSAICCiphertext{
-		C1:    *c1,
-		C2:    *c2,
-		C3:    *c3,
-		Proof: proof,
-	}
-
-	// Derive shared secret
-	ctHash := utils.SHA3256(SerializeCiphertext(&ciphertext))
-	sharedSecret := utils.Shake256(
-		utils.HashWithDomain(DomainSharedSecret, utils.HashConcat(ephemeralSecret, ctHash)),
-		32,
-	)
-
-	return &kmosaic.EncapsulationResult{
-		SharedSecret: sharedSecret,
-		Ciphertext:   ciphertext,
-	}, nil
+	sharedSecret := deriveSharedSecret(ephemeralSecret, ctBytes)
+	return &kmosaic.EncapsulationResult{SharedSecret: sharedSecret, Ciphertext: ciphertext}, nil
 }
 
-// Decapsulate recovers the shared secret from a ciphertext.
+func deriveSharedSecret(ephemeralSecret, ctBytes []byte) []byte {
+	inner := utils.HashConcat(ephemeralSecret, utils.SHA3256(ctBytes))
+	keyed := utils.HashWithDomain(DomainSharedSecret, inner)
+	utils.Zeroize(inner)
+	defer utils.Zeroize(keyed)
+	return utils.Shake256(keyed, SharedSecretSize)
+}
+
+// Decapsulate recovers the shared secret from a ciphertext. The public key
+// must be the one matching sk (checked against the hash stored in sk).
+// Malformed keys return ErrInvalidKey or ErrKeyMismatch. A ciphertext whose
+// shape or encoding is not the one Encapsulate produces (a public property)
+// yields the implicit-rejection value immediately; every other ciphertext
+// goes through both decryptions, re-encryption and a constant-time
+// selection, so the work and the control flow do not depend on secret data
+// or on which check failed.
 func Decapsulate(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, ct *kmosaic.MOSAICCiphertext) ([]byte, error) {
+	if sk == nil || pk == nil || ct == nil {
+		return nil, fmt.Errorf("%w: nil argument", kmosaic.ErrInvalidKey)
+	}
+	if err := checkKnownParams(pk.Params); err != nil {
+		return nil, err
+	}
 	params := pk.Params
+	if !secretKeyShapeValid(sk, params) {
+		return nil, fmt.Errorf("%w: malformed secret key", kmosaic.ErrInvalidKey)
+	}
+	// The hash is recomputed from the key's contents rather than read from
+	// the cache, so that a public key edited in memory (contents changed,
+	// cached hash kept) cannot bypass the key-mismatch check and turn
+	// decapsulation into a key-mismatch oracle. The cache is then
+	// consistent with the contents and is what re-encryption uses.
+	pkBytes := SerializePublicKey(pk)
+	if pkBytes == nil {
+		return nil, fmt.Errorf("%w: malformed public key", kmosaic.ErrInvalidKey)
+	}
+	pkHash := utils.SHA3256(pkBytes)
+	if !utils.ConstantTimeEqual(pkHash, sk.PublicKeyHash) || !utils.ConstantTimeEqual(pkHash, PublicKeyHash(pk)) {
+		return nil, kmosaic.ErrKeyMismatch
+	}
 
-	// Decrypt shares in parallel
+	ctBytes := SerializeCiphertext(ct, params)
+	if !slss.CiphertextCanonical(&ct.C1, params.SLSS) || !qcsd.CiphertextCanonical(&ct.C2, params.Code) {
+		// Shape and encoding are public information (a parsed ciphertext
+		// is always canonical); rejecting here reveals nothing about the key.
+		return implicitReject(sk, ctBytes), nil
+	}
+
 	var wg sync.WaitGroup
-	var m1, m2, m3 []byte
-	defer func() {
-		utils.Zeroize(m1)
-		utils.Zeroize(m2)
-		utils.Zeroize(m3)
-	}()
-
-	wg.Add(3)
+	var m1, m2 []byte
+	var ok2 int
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		m1 = slss.Decrypt(&ct.C1, sk.SLSS, params.SLSS)
 	}()
 	go func() {
 		defer wg.Done()
-		m2 = tdd.Decrypt(&ct.C2, sk.TDD, pk.TDD, params.TDD)
-	}()
-	go func() {
-		defer wg.Done()
-		m3 = egrw.Decrypt(&ct.C3, sk.EGRW, pk.EGRW, params.EGRW)
+		m2, ok2 = qcsd.Decrypt(&ct.C2, sk.Code, params.Code)
 	}()
 	wg.Wait()
+	defer func() {
+		utils.Zeroize(m1)
+		utils.Zeroize(m2)
+	}()
+	if len(m1) != shareSize || len(m2) != shareSize {
+		// Not reachable: both decryptions return a share for every canonical
+		// ciphertext under a well-shaped key. Kept as a defensive rejection.
+		return implicitReject(sk, ctBytes), nil
+	}
 
-	// Reconstruct secret
-	shares := [][]byte{m1, m2, m3}
-	ephemeralSecret, err := entanglement.SecretReconstruct(shares)
-	if err != nil {
-		return implicitReject(sk, ct), nil
+	ephemeralSecret := make([]byte, shareSize)
+	for i := range ephemeralSecret {
+		ephemeralSecret[i] = m1[i] ^ m2[i]
 	}
 	defer utils.Zeroize(ephemeralSecret)
 
-	// Re-encrypt to verify (Fujisaki-Okamoto)
-	reEncResult, err := EncapsulateDeterministic(pk, ephemeralSecret)
+	// Re-encrypt and compare the full serialized ciphertext byte for byte.
+	// This exact comparison is load-bearing: without the FO transform the
+	// XOR-share structure is malleable (flipping bit j of the SLSS share and
+	// the matching codeword bit of the code share yields a different
+	// ciphertext for the same ephemeral secret), and the shared secret also
+	// binds H(ct). Comparing decrypted shares instead, or dropping H(ct)
+	// from the key derivation, would break IND-CCA. A code decoding failure
+	// is folded into the same constant-time selection without branching.
+	reEnc, err := EncapsulateDeterministic(pk, ephemeralSecret)
 	if err != nil {
-		return implicitReject(sk, ct), nil
+		return nil, err
 	}
-
-	// Compare ciphertexts in constant time; do NOT return early to avoid timing leaks
-	originalCT := SerializeCiphertext(ct)
-	reEncCT := SerializeCiphertext(&reEncResult.Ciphertext)
-	validDecapsulation := 1
-	if !utils.ConstantTimeEqual(originalCT, reEncCT) {
-		validDecapsulation = 0
-	}
-
-	// Verify NIZK proof using recovered ephemeral secret (post-reconstruction)
-	ciphertextHashes := [][]byte{
-		utils.SHA3256(serializeSLSSCiphertext(&ct.C1)),
-		utils.SHA3256(serializeTDDCiphertext(&ct.C2)),
-		utils.SHA3256(serializeEGRWCiphertext(&ct.C3)),
-	}
-	if !entanglement.VerifyNIZKProof(ct.Proof, ciphertextHashes, ephemeralSecret) {
-		validDecapsulation = 0
-	}
-
-	// Constant-time select between correct shared secret and implicit reject
-	correctSecret := reEncResult.SharedSecret
-	rejectSecret := implicitReject(sk, ct)
-	result := utils.ConstantTimeSelect(validDecapsulation, correctSecret, rejectSecret)
-
-	// Zeroize temporary secrets
+	valid := ok2 & subtle.ConstantTimeCompare(ctBytes, SerializeCiphertext(&reEnc.Ciphertext, params))
+	rejectSecret := implicitReject(sk, ctBytes)
+	result := utils.ConstantTimeSelect(valid, reEnc.SharedSecret, rejectSecret)
 	utils.Zeroize(rejectSecret)
-	utils.Zeroize(correctSecret)
-
+	utils.Zeroize(reEnc.SharedSecret)
 	return result, nil
 }
 
-// implicitReject returns a deterministic but unpredictable rejection value.
-func implicitReject(sk *kmosaic.MOSAICSecretKey, ct *kmosaic.MOSAICCiphertext) []byte {
-	return utils.Shake256(
-		utils.HashWithDomain(DomainImplicitReject, utils.HashConcat(sk.Seed, SerializeCiphertext(ct))),
-		32,
-	)
+// secretKeyShapeValid reports whether sk has the public shape that key
+// generation under params produces (seed, public key hash and component
+// dimensions). It does not look at secret values.
+func secretKeyShapeValid(sk *kmosaic.MOSAICSecretKey, params kmosaic.MOSAICParams) bool {
+	if len(sk.Seed) != SeedSize || len(sk.PublicKeyHash) != 32 {
+		return false
+	}
+	if len(sk.SLSS.S) != params.SLSS.L*params.SLSS.N {
+		return false
+	}
+	if len(sk.Code.YPos) != params.Code.W {
+		return false // the oblivious decoder needs the position list
+	}
+	return true
 }
 
-// Encrypt encrypts a message using KEM+DEM.
-func Encrypt(pk *kmosaic.MOSAICPublicKey, plaintext []byte) (*kmosaic.EncryptedMessage, error) {
-	if len(plaintext) == 0 {
-		return nil, errors.New("plaintext cannot be empty")
-	}
+// implicitReject returns the rejection value for a ciphertext: a PRF of the
+// ciphertext under a key derived from the secret seed.
+func implicitReject(sk *kmosaic.MOSAICSecretKey, ctBytes []byte) []byte {
+	rejectKey := utils.HashWithDomain(DomainRejectKey, sk.Seed)
+	defer utils.Zeroize(rejectKey)
+	inner := utils.HashConcat(rejectKey, utils.SHA3256(ctBytes))
+	keyed := utils.HashWithDomain(DomainReject, inner)
+	utils.Zeroize(inner)
+	defer utils.Zeroize(keyed)
+	return utils.Shake256(keyed, SharedSecretSize)
+}
 
+// Encrypt encrypts a message (possibly empty) using the KEM and AES-256-GCM.
+func Encrypt(pk *kmosaic.MOSAICPublicKey, plaintext []byte) (*kmosaic.EncryptedMessage, error) {
+	if uint64(len(plaintext)) > MaxPlaintextSize {
+		return nil, kmosaic.ErrMessageTooLarge
+	}
 	result, err := Encapsulate(pk)
 	if err != nil {
 		return nil, err
 	}
+	defer utils.Zeroize(result.SharedSecret)
 
-	// Derive encryption key and nonce
-	encKey := utils.Shake256(utils.HashWithDomain(DomainEncKey, result.SharedSecret), 32)
-	nonce := utils.Shake256(utils.HashWithDomain(DomainNonce, result.SharedSecret), 12)
-	defer utils.Zeroize(encKey)
-
-	// AEAD encryption using AES-256-GCM
-	block, err := aes.NewCipher(encKey)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, nonce, err := aeadFor(result.SharedSecret)
 	if err != nil {
 		return nil, err
 	}
 	encrypted := aead.Seal(nil, nonce, plaintext, nil)
-
-	return &kmosaic.EncryptedMessage{
-		Ciphertext: result.Ciphertext,
-		Encrypted:  encrypted,
-		Nonce:      nonce,
-	}, nil
+	return &kmosaic.EncryptedMessage{Ciphertext: result.Ciphertext, Encrypted: encrypted}, nil
 }
 
 // Decrypt decrypts an encrypted message.
 func Decrypt(sk *kmosaic.MOSAICSecretKey, pk *kmosaic.MOSAICPublicKey, em *kmosaic.EncryptedMessage) ([]byte, error) {
+	if em == nil {
+		return nil, fmt.Errorf("%w: nil message", kmosaic.ErrInvalidCiphertext)
+	}
 	sharedSecret, err := Decapsulate(sk, pk, &em.Ciphertext)
 	if err != nil {
 		return nil, err
 	}
+	defer utils.Zeroize(sharedSecret)
 
-	// Derive encryption key and nonce
-	encKey := utils.Shake256(utils.HashWithDomain(DomainEncKey, sharedSecret), 32)
-	nonce := utils.Shake256(utils.HashWithDomain(DomainNonce, sharedSecret), 12)
-	defer utils.Zeroize(encKey)
-
-	// AEAD decryption using AES-256-GCM
-	if len(em.Encrypted) < 1 {
-		return nil, errors.New("ciphertext too short")
-	}
-	block, err := aes.NewCipher(encKey)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, nonce, err := aeadFor(sharedSecret)
 	if err != nil {
 		return nil, err
 	}
 	plaintext, err := aead.Open(nil, nonce, em.Encrypted, nil)
 	if err != nil {
-		return nil, errors.New("authentication failed")
+		return nil, kmosaic.ErrAuthentication
 	}
 	return plaintext, nil
 }
 
-// SerializePublicKey serializes a public key.
-// Format: [level_len:4][level_string][slss_len:4][slss_data][tdd_len:4][tdd_data][egrw_len:4][egrw_data][binding:32]
+// aeadFor derives the AES-256-GCM key and nonce from a shared secret. Each
+// encapsulation yields a fresh shared secret, so the nonce is never reused.
+func aeadFor(sharedSecret []byte) (cipher.AEAD, []byte, error) {
+	keyed := utils.HashWithDomain(DomainEncKey, sharedSecret)
+	encKey := utils.Shake256(keyed, 32)
+	utils.Zeroize(keyed)
+	defer utils.Zeroize(encKey)
+	nonce := utils.Shake256(utils.HashWithDomain(DomainNonce, sharedSecret), 12)
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	return aead, nonce, nil
+}
+
+// -----------------------------------------------------------------------------
+// Serialization
+// -----------------------------------------------------------------------------
+
+// SerializePublicKey serializes a public key:
+// header || [slss_len:4][slss] || [code_len:4][code] || binding:32.
 func SerializePublicKey(pk *kmosaic.MOSAICPublicKey) []byte {
-	slssBytes := slss.SerializePublicKey(pk.SLSS)
-	tddBytes := tdd.SerializePublicKey(pk.TDD)
-	egrwBytes := egrw.SerializePublicKey(pk.EGRW)
-
-	// Serialize security level as string
-	levelStr := string(pk.Params.Level)
-	levelBytes := []byte(levelStr)
-
-	result := make([]byte, 0, 16+len(levelBytes)+len(slssBytes)+len(tddBytes)+len(egrwBytes)+32)
-
-	// Length prefixes buffer
-	lenBuf := make([]byte, 4)
-
-	// Security level string
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(levelBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, levelBytes...)
-
-	// SLSS component
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(slssBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, slssBytes...)
-
-	// TDD component
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(tddBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, tddBytes...)
-
-	// EGRW component
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(egrwBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, egrwBytes...)
-
-	// Binding (fixed 32 bytes, no length prefix)
-	result = append(result, pk.Binding...)
-
-	return result
+	if pk == nil || checkKnownParams(pk.Params) != nil || len(pk.Binding) != 32 {
+		return nil
+	}
+	hdr, err := wire.Header(wire.TypeKEMPublicKey, pk.Params.Level)
+	if err != nil {
+		return nil
+	}
+	s, c := slss.SerializePublicKey(pk.SLSS), qcsd.SerializePublicKey(pk.Code, pk.Params.Code)
+	if s == nil || c == nil {
+		return nil
+	}
+	out := hdr
+	out = wire.AppendLV(out, s)
+	out = wire.AppendLV(out, c)
+	return append(out, pk.Binding...)
 }
 
-// SerializeCiphertext serializes a ciphertext.
-// Format: [c1_len:4][c1_data][c2_len:4][c2_data][c3_len:4][c3_data][proof_data]
-// Note: proof has no length prefix - it extends to end of buffer
-func SerializeCiphertext(ct *kmosaic.MOSAICCiphertext) []byte {
-	c1Bytes := serializeSLSSCiphertext(&ct.C1)
-	c2Bytes := serializeTDDCiphertext(&ct.C2)
-	c3Bytes := serializeEGRWCiphertext(&ct.C3)
-
-	result := make([]byte, 0, 12+len(c1Bytes)+len(c2Bytes)+len(c3Bytes)+len(ct.Proof))
-
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(c1Bytes)))
-	result = append(result, lenBuf...)
-	result = append(result, c1Bytes...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(c2Bytes)))
-	result = append(result, lenBuf...)
-	result = append(result, c2Bytes...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(c3Bytes)))
-	result = append(result, lenBuf...)
-	result = append(result, c3Bytes...)
-
-	// Proof has no length prefix - just append to end (matching Node implementation)
-	result = append(result, ct.Proof...)
-
-	return result
-}
-
-func serializeSLSSCiphertext(ct *kmosaic.SLSSCiphertext) []byte {
-	uBytes := len(ct.U) * 4
-	vBytes := len(ct.V) * 4
-	result := make([]byte, 8+uBytes+vBytes)
-	// Write byte lengths (not element counts)
-	binary.LittleEndian.PutUint32(result[0:], uint32(uBytes))
-	offset := 4
-	for i, v := range ct.U {
-		binary.LittleEndian.PutUint32(result[offset+i*4:], uint32(v))
-	}
-	offset += uBytes
-	binary.LittleEndian.PutUint32(result[offset:], uint32(vBytes))
-	offset += 4
-	for i, v := range ct.V {
-		binary.LittleEndian.PutUint32(result[offset+i*4:], uint32(v))
-	}
-	return result
-}
-
-func serializeTDDCiphertext(ct *kmosaic.TDDCiphertext) []byte {
-	dataBytes := len(ct.Data) * 4
-	result := make([]byte, 4+dataBytes)
-	// Write byte length (not element count)
-	binary.LittleEndian.PutUint32(result[0:], uint32(dataBytes))
-	for i, v := range ct.Data {
-		binary.LittleEndian.PutUint32(result[4+i*4:], uint32(v))
-	}
-	return result
-}
-
-func serializeEGRWCiphertext(ct *kmosaic.EGRWCiphertext) []byte {
-	vertexBytes := egrw.SL2ToBytes(ct.Vertex)
-	result := make([]byte, len(vertexBytes)+len(ct.Commitment))
-	copy(result, vertexBytes)
-	copy(result[len(vertexBytes):], ct.Commitment)
-	return result
-}
-
-// SerializeSecretKey serializes a secret key.
-func SerializeSecretKey(sk *kmosaic.MOSAICSecretKey) []byte {
-	result := make([]byte, 0)
-	lenBuf := make([]byte, 4)
-
-	// SLSS secret key (sparse vector)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.SLSS.S)))
-	result = append(result, lenBuf...)
-	for _, v := range sk.SLSS.S {
-		result = append(result, byte(v))
-	}
-
-	// TDD secret key (factors)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.TDD.Factors.A)))
-	result = append(result, lenBuf...)
-	for _, vec := range sk.TDD.Factors.A {
-		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
-		result = append(result, lenBuf...)
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			result = append(result, buf...)
-		}
-	}
-	for _, vec := range sk.TDD.Factors.B {
-		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
-		result = append(result, lenBuf...)
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			result = append(result, buf...)
-		}
-	}
-	for _, vec := range sk.TDD.Factors.C {
-		binary.LittleEndian.PutUint32(lenBuf, uint32(len(vec)))
-		result = append(result, lenBuf...)
-		for _, v := range vec {
-			buf := make([]byte, 4)
-			binary.LittleEndian.PutUint32(buf, uint32(v))
-			result = append(result, buf...)
-		}
-	}
-
-	// EGRW secret key (walk)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.EGRW.Walk)))
-	result = append(result, lenBuf...)
-	for _, v := range sk.EGRW.Walk {
-		result = append(result, byte(v))
-	}
-
-	// Seed
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.Seed)))
-	result = append(result, lenBuf...)
-	result = append(result, sk.Seed...)
-
-	// PublicKeyHash
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(sk.PublicKeyHash)))
-	result = append(result, lenBuf...)
-	result = append(result, sk.PublicKeyHash...)
-
-	return result
-}
-
-// DeserializePublicKey deserializes bytes to a public key.
-// Format: [level_len:4][level_string][slss_len:4][slss_data][tdd_len:4][tdd_data][egrw_len:4][egrw_data][binding:32]
+// DeserializePublicKey parses a public key, validates its binding and caches its hash.
 func DeserializePublicKey(data []byte) (*kmosaic.MOSAICPublicKey, error) {
-	if len(data) < 16 {
-		return nil, errors.New("invalid public key data: too short")
-	}
-
-	offset := 0
-	pk := &kmosaic.MOSAICPublicKey{}
-
-	// Read security level string
-	levelLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+levelLen > len(data) {
-		return nil, errors.New("invalid public key: level string truncated")
-	}
-	levelStr := string(data[offset : offset+levelLen])
-	offset += levelLen
-
-	// Get params from level string
-	level := kmosaic.SecurityLevel(levelStr)
-	params, err := core.GetParams(level)
+	level, body, err := wire.ParseHeader(data, wire.TypeKEMPublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("invalid public key: unknown security level %q: %w", levelStr, err)
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
 	}
-	pk.Params = params
-
-	// Read SLSS public key
-	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+slssLen > len(data) {
-		return nil, errors.New("invalid public key: SLSS data truncated")
-	}
-	slssPK, err := slss.DeserializePublicKey(data[offset : offset+slssLen])
+	params, _ := core.GetParams(level)
+	r := wire.NewReader(body)
+	slssBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: SLSS component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	pk.SLSS = *slssPK
-	offset += slssLen
-
-	// Read TDD public key
-	tddLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+tddLen > len(data) {
-		return nil, errors.New("invalid public key: TDD data truncated")
-	}
-	tddPK, err := tdd.DeserializePublicKey(data[offset : offset+tddLen])
+	codeBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: code component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	pk.TDD = *tddPK
-	offset += tddLen
-
-	// Read EGRW public key
-	egrwLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+egrwLen > len(data) {
-		return nil, errors.New("invalid public key: EGRW data truncated")
+	binding, err := r.Fixed(32)
+	if err != nil || r.Done() != nil {
+		return nil, fmt.Errorf("%w: binding has wrong length", kmosaic.ErrInvalidKey)
 	}
-	egrwPK, err := egrw.DeserializePublicKey(data[offset : offset+egrwLen])
-	if err != nil {
-		return nil, err
-	}
-	pk.EGRW = *egrwPK
-	offset += egrwLen
-
-	// Read binding (fixed 32 bytes, no length prefix)
-	if offset+32 > len(data) {
-		return nil, errors.New("invalid public key: binding truncated")
-	}
-	pk.Binding = make([]byte, 32)
-	copy(pk.Binding, data[offset:offset+32])
-
-	// Validate binding to prevent component substitution attacks
-	slssBytes := slss.SerializePublicKey(pk.SLSS)
-	tddBytes := tdd.SerializePublicKey(pk.TDD)
-	egrwBytes := egrw.SerializePublicKey(pk.EGRW)
-	expectedBinding := entanglement.ComputeBinding(slssBytes, tddBytes, egrwBytes)
-	if !utils.ConstantTimeEqual(pk.Binding, expectedBinding) {
-		return nil, errors.New("invalid public key: binding mismatch")
+	if !utils.ConstantTimeEqual(binding, entanglement.ComputeBinding(slssBytes, codeBytes)) {
+		return nil, fmt.Errorf("%w: binding mismatch", kmosaic.ErrInvalidKey)
 	}
 
-	// Validate consistency with params
-	expectedSLSSALen := params.SLSS.M * params.SLSS.N
-	if len(pk.SLSS.A) != expectedSLSSALen {
-		return nil, errors.New("invalid public key: SLSS.A length mismatch with params")
+	var wg sync.WaitGroup
+	var slssPK *kmosaic.SLSSPublicKey
+	var codePK *kmosaic.CodePublicKey
+	var errS, errC error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		slssPK, errS = slss.DeserializePublicKey(slssBytes, params.SLSS)
+	}()
+	go func() {
+		defer wg.Done()
+		codePK, errC = qcsd.DeserializePublicKey(codeBytes, params.Code)
+	}()
+	wg.Wait()
+	if errS != nil {
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, errS)
 	}
-	if len(pk.SLSS.T) != params.SLSS.M {
-		return nil, errors.New("invalid public key: SLSS.T length mismatch with params")
+	if errC != nil {
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, errC)
 	}
-	expectedTDDTLen := params.TDD.N * params.TDD.N * params.TDD.N
-	if len(pk.TDD.T) != expectedTDDTLen {
-		return nil, errors.New("invalid public key: TDD.T length mismatch with params")
-	}
-
+	pk := &kmosaic.MOSAICPublicKey{SLSS: *slssPK, Code: *codePK, Binding: append([]byte{}, binding...), Params: params}
+	pk.Hash = utils.SHA3256(data)
 	return pk, nil
 }
 
-// DeserializeSecretKey deserializes bytes to a secret key.
+// SerializeSecretKey serializes a secret key:
+// header || [slss_len:4][slss] || [code_len:4][code] || seed:32 || pkhash:32.
+func SerializeSecretKey(sk *kmosaic.MOSAICSecretKey, params kmosaic.MOSAICParams) []byte {
+	if sk == nil || checkKnownParams(params) != nil || !secretKeyShapeValid(sk, params) {
+		return nil
+	}
+	hdr, err := wire.Header(wire.TypeKEMSecretKey, params.Level)
+	if err != nil {
+		return nil
+	}
+	s, c := slss.SerializeSecretKey(sk.SLSS, params.SLSS), qcsd.SerializeSecretKey(sk.Code, params.Code)
+	if s == nil || c == nil {
+		return nil
+	}
+	out := hdr
+	out = wire.AppendLV(out, s)
+	out = wire.AppendLV(out, c)
+	out = append(out, sk.Seed...)
+	return append(out, sk.PublicKeyHash...)
+}
+
+// DeserializeSecretKey parses a secret key.
 func DeserializeSecretKey(data []byte) (*kmosaic.MOSAICSecretKey, error) {
-	if len(data) < 4 {
-		return nil, errors.New("invalid secret key data: too short")
-	}
-
-	offset := 0
-	sk := &kmosaic.MOSAICSecretKey{}
-
-	// Read SLSS secret key
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: truncated SLSS length")
-	}
-	slssLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+slssLen > len(data) {
-		return nil, errors.New("invalid secret key: SLSS data truncated")
-	}
-	sk.SLSS.S = make([]int8, slssLen)
-	for i := 0; i < slssLen; i++ {
-		sk.SLSS.S[i] = int8(data[offset+i])
-	}
-	offset += slssLen
-
-	// Read TDD factors
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing TDD factor count")
-	}
-	factorCount := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if factorCount < 0 || factorCount > 1000000 {
-		return nil, errors.New("invalid secret key: unreasonable factor count")
-	}
-	sk.TDD.Factors.A = make([][]int32, factorCount)
-	sk.TDD.Factors.B = make([][]int32, factorCount)
-	sk.TDD.Factors.C = make([][]int32, factorCount)
-
-	for i := 0; i < factorCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid secret key: TDD factor A length truncated")
-		}
-		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
-			return nil, errors.New("invalid secret key: TDD factor A truncated")
-		}
-		sk.TDD.Factors.A[i] = make([]int32, vecLen)
-		for j := 0; j < vecLen; j++ {
-			sk.TDD.Factors.A[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
-			offset += 4
-		}
-	}
-	for i := 0; i < factorCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid secret key: TDD factor B length truncated")
-		}
-		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
-			return nil, errors.New("invalid secret key: TDD factor B truncated")
-		}
-		sk.TDD.Factors.B[i] = make([]int32, vecLen)
-		for j := 0; j < vecLen; j++ {
-			sk.TDD.Factors.B[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
-			offset += 4
-		}
-	}
-	for i := 0; i < factorCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("invalid secret key: TDD factor C length truncated")
-		}
-		vecLen := int(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-		if vecLen < 0 || vecLen > (len(data)-offset)/4 {
-			return nil, errors.New("invalid secret key: TDD factor C truncated")
-		}
-		sk.TDD.Factors.C[i] = make([]int32, vecLen)
-		for j := 0; j < vecLen; j++ {
-			sk.TDD.Factors.C[i][j] = int32(binary.LittleEndian.Uint32(data[offset:]))
-			offset += 4
-		}
-	}
-
-	// Read EGRW walk
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing EGRW walk length")
-	}
-	walkLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if walkLen < 0 || walkLen > (len(data)-offset) {
-		return nil, errors.New("invalid secret key: EGRW walk truncated")
-	}
-	sk.EGRW.Walk = make([]int, walkLen)
-	for i := 0; i < walkLen; i++ {
-		sk.EGRW.Walk[i] = int(data[offset+i])
-	}
-	offset += walkLen
-
-	// Read Seed
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing seed length")
-	}
-	seedLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if seedLen < 0 || seedLen > (len(data)-offset) {
-		return nil, errors.New("invalid secret key: seed truncated")
-	}
-	sk.Seed = make([]byte, seedLen)
-	copy(sk.Seed, data[offset:offset+seedLen])
-	offset += seedLen
-
-	// Read PublicKeyHash
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid secret key: missing public key hash length")
-	}
-	hashLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if hashLen < 0 || hashLen > (len(data)-offset) {
-		return nil, errors.New("invalid secret key: public key hash truncated")
-	}
-	sk.PublicKeyHash = make([]byte, hashLen)
-	copy(sk.PublicKeyHash, data[offset:offset+hashLen])
-
-	return sk, nil
-}
-
-// DeserializeCiphertext deserializes bytes to a ciphertext.
-// Format: [c1_len:4][c1_data][c2_len:4][c2_data][c3_len:4][c3_data][proof_data]
-// Note: proof has no length prefix - it's everything remaining in buffer
-func DeserializeCiphertext(data []byte) (*kmosaic.MOSAICCiphertext, error) {
-	if len(data) < 12 {
-		return nil, errors.New("invalid ciphertext data: too short")
-	}
-
-	offset := 0
-	ct := &kmosaic.MOSAICCiphertext{}
-
-	// Read C1 (SLSS ciphertext)
-	c1Len := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+c1Len > len(data) {
-		return nil, errors.New("invalid ciphertext: C1 truncated")
-	}
-	c1, err := deserializeSLSSCiphertext(data[offset : offset+c1Len])
+	level, body, err := wire.ParseHeader(data, wire.TypeKEMSecretKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
 	}
-	ct.C1 = *c1
-	offset += c1Len
-
-	// Read C2 (TDD ciphertext)
-	c2Len := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+c2Len > len(data) {
-		return nil, errors.New("invalid ciphertext: C2 truncated")
-	}
-	c2, err := deserializeTDDCiphertext(data[offset : offset+c2Len])
+	params, _ := core.GetParams(level)
+	r := wire.NewReader(body)
+	slssBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: SLSS component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	ct.C2 = *c2
-	offset += c2Len
-
-	// Read C3 (EGRW ciphertext)
-	c3Len := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+c3Len > len(data) {
-		return nil, errors.New("invalid ciphertext: C3 truncated")
-	}
-	c3, err := deserializeEGRWCiphertext(data[offset : offset+c3Len])
+	codeBytes, err := r.LV(MaxComponentSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: code component: %v", kmosaic.ErrInvalidKey, err)
 	}
-	ct.C3 = *c3
-	offset += c3Len
-
-	// Read proof - everything remaining in buffer
-	ct.Proof = make([]byte, len(data)-offset)
-	copy(ct.Proof, data[offset:])
-
-	return ct, nil
-}
-
-func deserializeSLSSCiphertext(data []byte) (*kmosaic.SLSSCiphertext, error) {
-	if len(data) < 8 {
-		return nil, errors.New("invalid SLSS ciphertext")
-	}
-	ct := &kmosaic.SLSSCiphertext{}
-	offset := 0
-
-	// Read byte length (not element count)
-	uBytes := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if uBytes%4 != 0 {
-		return nil, errors.New("invalid SLSS ciphertext: U length not multiple of 4")
-	}
-	uLen := uBytes / 4
-	if offset+uBytes > len(data) {
-		return nil, errors.New("invalid SLSS ciphertext: U truncated")
-	}
-	ct.U = make([]int32, uLen)
-	for i := 0; i < uLen; i++ {
-		ct.U[i] = int32(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-	}
-
-	if offset+4 > len(data) {
-		return nil, errors.New("invalid SLSS ciphertext: missing V length")
-	}
-	// Read byte length (not element count)
-	vBytes := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if vBytes%4 != 0 {
-		return nil, errors.New("invalid SLSS ciphertext: V length not multiple of 4")
-	}
-	vLen := vBytes / 4
-	if offset+vBytes > len(data) {
-		return nil, errors.New("invalid SLSS ciphertext: V truncated")
-	}
-	ct.V = make([]int32, vLen)
-	for i := 0; i < vLen; i++ {
-		ct.V[i] = int32(binary.LittleEndian.Uint32(data[offset:]))
-		offset += 4
-	}
-
-	return ct, nil
-}
-
-func deserializeTDDCiphertext(data []byte) (*kmosaic.TDDCiphertext, error) {
-	if len(data) < 4 {
-		return nil, errors.New("invalid TDD ciphertext")
-	}
-	ct := &kmosaic.TDDCiphertext{}
-	// Read byte length (not element count)
-	dataBytes := int(binary.LittleEndian.Uint32(data[0:]))
-	if dataBytes%4 != 0 {
-		return nil, errors.New("invalid TDD ciphertext: data length not multiple of 4")
-	}
-	dataLen := dataBytes / 4
-	if 4+dataBytes > len(data) {
-		return nil, errors.New("invalid TDD ciphertext: data truncated")
-	}
-	ct.Data = make([]int32, dataLen)
-	for i := 0; i < dataLen; i++ {
-		ct.Data[i] = int32(binary.LittleEndian.Uint32(data[4+i*4:]))
-	}
-	return ct, nil
-}
-
-func deserializeEGRWCiphertext(data []byte) (*kmosaic.EGRWCiphertext, error) {
-	if len(data) < 16 {
-		return nil, errors.New("invalid EGRW ciphertext")
-	}
-	ct := &kmosaic.EGRWCiphertext{}
-	ct.Vertex = egrw.BytesToSL2(data[:16])
-	ct.Commitment = make([]byte, len(data)-16)
-	copy(ct.Commitment, data[16:])
-	return ct, nil
-}
-
-// SerializeEncryptedMessage serializes an encrypted message.
-// Format: [kemCt_len:4][kemCt_data][aes_encrypted_data]
-// Note: nonce is not stored - it's derived from shared secret during decryption
-func SerializeEncryptedMessage(em *kmosaic.EncryptedMessage) []byte {
-	ctBytes := SerializeCiphertext(&em.Ciphertext)
-
-	result := make([]byte, 0, 4+len(ctBytes)+len(em.Encrypted))
-	lenBuf := make([]byte, 4)
-
-	// KEM Ciphertext length and data
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(ctBytes)))
-	result = append(result, lenBuf...)
-	result = append(result, ctBytes...)
-
-	// AES-GCM encrypted payload (includes auth tag)
-	// No length prefix - everything remaining is encrypted data
-	result = append(result, em.Encrypted...)
-
-	return result
-}
-
-// DeserializeEncryptedMessage deserializes bytes to an encrypted message.
-// Format: [kemCt_len:4][kemCt_data][aes_encrypted_data]
-// Note: nonce is not stored - it will be derived from shared secret during decryption
-func DeserializeEncryptedMessage(data []byte) (*kmosaic.EncryptedMessage, error) {
-	if len(data) < 4 {
-		return nil, errors.New("invalid encrypted message: too short")
-	}
-
-	em := &kmosaic.EncryptedMessage{}
-	offset := 0
-
-	// Read KEM ciphertext
-	ctLen := int(binary.LittleEndian.Uint32(data[offset:]))
-	offset += 4
-	if offset+ctLen > len(data) {
-		return nil, errors.New("invalid encrypted message: ciphertext truncated")
-	}
-	ct, err := DeserializeCiphertext(data[offset : offset+ctLen])
+	seed, err := r.Fixed(SeedSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: seed truncated", kmosaic.ErrInvalidKey)
 	}
-	em.Ciphertext = *ct
-	offset += ctLen
+	hash, err := r.Fixed(32)
+	if err != nil || r.Done() != nil {
+		return nil, fmt.Errorf("%w: public key hash has wrong length", kmosaic.ErrInvalidKey)
+	}
+	slssSK, err := slss.DeserializeSecretKey(slssBytes, params.SLSS)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
+	}
+	codeSK, err := qcsd.DeserializeSecretKey(codeBytes, params.Code)
+	if err != nil {
+		utils.ZeroizeInt8(slssSK.S)
+		return nil, fmt.Errorf("%w: %v", kmosaic.ErrInvalidKey, err)
+	}
+	return &kmosaic.MOSAICSecretKey{
+		SLSS:          *slssSK,
+		Code:          *codeSK,
+		Seed:          append([]byte{}, seed...),
+		PublicKeyHash: append([]byte{}, hash...),
+	}, nil
+}
 
-	// Read AES-GCM encrypted payload - everything remaining
-	em.Encrypted = make([]byte, len(data)-offset)
-	copy(em.Encrypted, data[offset:])
+// SerializeCiphertext serializes a ciphertext: header || [c1_len:4][c1] || [c2_len:4][c2].
+// It returns nil for a nil or mis-shaped ciphertext; a ciphertext with
+// out-of-range coefficients or padding bits serializes to its canonical
+// form (Decapsulate rejects such in-memory ciphertexts before use).
+func SerializeCiphertext(ct *kmosaic.MOSAICCiphertext, params kmosaic.MOSAICParams) []byte {
+	if ct == nil || checkKnownParams(params) != nil {
+		return nil
+	}
+	hdr, err := wire.Header(wire.TypeKEMCiphertext, params.Level)
+	if err != nil {
+		return nil
+	}
+	c1 := slss.SerializeCiphertext(&ct.C1, params.SLSS)
+	if c1 == nil || len(ct.C2.U) != (params.Code.N+63)/64 || len(ct.C2.V) != (qcsd.CodeLength(params.Code)+63)/64 {
+		return nil
+	}
+	out := hdr
+	out = wire.AppendLV(out, c1)
+	return wire.AppendLV(out, qcsd.SerializeCiphertext(&ct.C2, params.Code))
+}
 
-	// Nonce will be derived from shared secret during decryption (not stored)
-	em.Nonce = nil
+// DeserializeCiphertext parses a ciphertext. The parameters are taken from
+// the header; the result is returned together with them.
+func DeserializeCiphertext(data []byte) (*kmosaic.MOSAICCiphertext, kmosaic.MOSAICParams, error) {
+	level, body, err := wire.ParseHeader(data, wire.TypeKEMCiphertext)
+	if err != nil {
+		return nil, kmosaic.MOSAICParams{}, fmt.Errorf("%w: %v", kmosaic.ErrInvalidCiphertext, err)
+	}
+	params, _ := core.GetParams(level)
+	r := wire.NewReader(body)
+	c1Bytes, err := r.LV(MaxComponentSize)
+	if err != nil {
+		return nil, params, fmt.Errorf("%w: C1: %v", kmosaic.ErrInvalidCiphertext, err)
+	}
+	c2Bytes, err := r.LV(MaxComponentSize)
+	if err != nil || r.Done() != nil {
+		return nil, params, fmt.Errorf("%w: C2 truncated or trailing data", kmosaic.ErrInvalidCiphertext)
+	}
+	c1, err := slss.DeserializeCiphertext(c1Bytes, params.SLSS)
+	if err != nil {
+		return nil, params, fmt.Errorf("%w: %v", kmosaic.ErrInvalidCiphertext, err)
+	}
+	c2, err := qcsd.DeserializeCiphertext(c2Bytes, params.Code)
+	if err != nil {
+		return nil, params, fmt.Errorf("%w: %v", kmosaic.ErrInvalidCiphertext, err)
+	}
+	return &kmosaic.MOSAICCiphertext{C1: *c1, C2: *c2}, params, nil
+}
 
-	return em, nil
+// SerializeEncryptedMessage serializes an encrypted message:
+// header || [ct_len:4][ciphertext] || payload.
+func SerializeEncryptedMessage(em *kmosaic.EncryptedMessage, params kmosaic.MOSAICParams) []byte {
+	if em == nil {
+		return nil
+	}
+	ct := SerializeCiphertext(&em.Ciphertext, params)
+	if ct == nil {
+		return nil
+	}
+	hdr, err := wire.Header(wire.TypeEncryptedMsg, params.Level)
+	if err != nil {
+		return nil
+	}
+	out := hdr
+	out = wire.AppendLV(out, ct)
+	return append(out, em.Encrypted...)
+}
+
+// DeserializeEncryptedMessage parses an encrypted message.
+func DeserializeEncryptedMessage(data []byte) (*kmosaic.EncryptedMessage, kmosaic.MOSAICParams, error) {
+	level, body, err := wire.ParseHeader(data, wire.TypeEncryptedMsg)
+	if err != nil {
+		return nil, kmosaic.MOSAICParams{}, fmt.Errorf("%w: %v", kmosaic.ErrInvalidCiphertext, err)
+	}
+	params, _ := core.GetParams(level)
+	r := wire.NewReader(body)
+	ctBytes, err := r.LV(MaxComponentSize)
+	if err != nil {
+		return nil, params, fmt.Errorf("%w: ciphertext: %v", kmosaic.ErrInvalidCiphertext, err)
+	}
+	ct, ctParams, err := DeserializeCiphertext(ctBytes)
+	if err != nil {
+		return nil, params, err
+	}
+	if ctParams.Level != level {
+		return nil, params, fmt.Errorf("%w: level mismatch", kmosaic.ErrInvalidCiphertext)
+	}
+	return &kmosaic.EncryptedMessage{Ciphertext: *ct, Encrypted: append([]byte{}, r.Rest()...)}, params, nil
 }

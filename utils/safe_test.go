@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"math"
 	"testing"
 )
 
@@ -24,7 +25,7 @@ func TestSafeMultiply(t *testing.T) {
 	}
 
 	// Large values that would overflow on 64-bit (need values > sqrt(MaxInt))
-	_, err = SafeMultiply(1<<32, 1<<32)
+	_, err = SafeMultiply(math.MaxInt/2+1, 2)
 	if err == nil {
 		t.Error("SafeMultiply with overflow should return error")
 	}

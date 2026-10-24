@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 func TestGetParams(t *testing.T) {
@@ -59,18 +59,17 @@ func TestValidateParams(t *testing.T) {
 		t.Error("ValidateParams should reject non-prime Q")
 	}
 
-	// Test invalid TDD params
+	// Test invalid code params
 	invalid = params
-	invalid.TDD.N = 0
+	invalid.Code.N = 0
 	if err := ValidateParams(invalid); err == nil {
-		t.Error("ValidateParams should reject TDD N=0")
+		t.Error("ValidateParams should reject code N=0")
 	}
 
-	// Test invalid EGRW params
 	invalid = params
-	invalid.EGRW.K = 0
+	invalid.Code.K = 16 // no longer matches the 32-byte SLSS message
 	if err := ValidateParams(invalid); err == nil {
-		t.Error("ValidateParams should reject EGRW K=0")
+		t.Error("ValidateParams should reject mismatched message sizes")
 	}
 }
 
@@ -110,9 +109,8 @@ func BenchmarkIsPrime(b *testing.B) {
 		{"Small_Composite_ByThree", 27}, // 3^3
 
 		// Actual project primes (from MOS128/256 params)
-		{"Project_EGRW128_Prime", 1021},
-		{"Project_EGRW256_Prime", 2039},
-		{"Project_TDD_Prime", 7681},
+		{"Project_Code_RingLength", 57637},
+		{"Project_LatticeSign_Q", 8380417},
 		{"Project_SLSS_Prime", 12289},
 
 		// Composites near project primes (harder cases)

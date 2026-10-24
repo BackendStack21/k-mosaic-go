@@ -53,31 +53,6 @@ func TestSecretShareDeterministic(t *testing.T) {
 	}
 }
 
-func TestCommitment(t *testing.T) {
-	data := []byte("data")
-	comm, err := CreateCommitment(data)
-	if err != nil {
-		t.Fatalf("CreateCommitment failed: %v", err)
-	}
-
-	if !VerifyCommitment(data, comm.Commitment, comm.Opening) {
-		t.Error("VerifyCommitment failed")
-	}
-
-	// Test wrong data
-	if VerifyCommitment([]byte("wrong"), comm.Commitment, comm.Opening) {
-		t.Error("VerifyCommitment passed with wrong data")
-	}
-
-	// Test wrong opening
-	wrongOpening := make([]byte, len(comm.Opening))
-	copy(wrongOpening, comm.Opening)
-	wrongOpening[0] ^= 1
-	if VerifyCommitment(data, comm.Commitment, wrongOpening) {
-		t.Error("VerifyCommitment passed with wrong opening")
-	}
-}
-
 func TestBinding(t *testing.T) {
 	id := []byte("identity")
 	msg := []byte("message")
@@ -96,54 +71,5 @@ func TestBinding(t *testing.T) {
 	binding3 := ComputeBinding([]byte("other"), msg, other)
 	if bytes.Equal(binding, binding3) {
 		t.Error("ComputeBinding collision on ID")
-	}
-}
-
-func TestNIZKProof(t *testing.T) {
-	// Mock data for NIZK - must match security requirements
-	secret := []byte("secret")
-	shares := [][]byte{[]byte("share1"), []byte("share2"), []byte("share3")}
-	// NIZK requires exactly 3 ciphertext hashes, each 32 bytes
-	hashes := [][]byte{
-		make([]byte, 32),
-		make([]byte, 32),
-		make([]byte, 32),
-	}
-	// Fill with non-zero data
-	for i := range hashes {
-		for j := range hashes[i] {
-			hashes[i][j] = byte(i*32 + j)
-		}
-	}
-	seed := []byte("seed")
-
-	proof := GenerateNIZKProof(secret, shares, hashes, seed)
-	if len(proof) == 0 {
-		t.Fatalf("GenerateNIZKProof returned empty proof")
-	}
-
-	if !VerifyNIZKProof(proof, hashes, secret) {
-		t.Error("VerifyNIZKProof failed for structured proof")
-	}
-
-	// Test serialization roundtrip (identity)
-	serialized := SerializeNIZKProof(proof)
-	if !bytes.Equal(proof, serialized) {
-		t.Error("Serialization roundtrip failed")
-	}
-
-	// Test that invalid inputs are rejected
-	if VerifyNIZKProof(make([]byte, 32), hashes, secret) {
-		t.Error("VerifyNIZKProof should reject all-zero compact proof")
-	}
-	if VerifyNIZKProof(proof, hashes[:2], secret) {
-		t.Error("VerifyNIZKProof should reject wrong number of hashes")
-	}
-	// Tamper a single byte in proof and expect rejection
-	proofTampered := make([]byte, len(proof))
-	copy(proofTampered, proof)
-	proofTampered[len(proofTampered)-1] ^= 0xFF
-	if VerifyNIZKProof(proofTampered, hashes, secret) {
-		t.Error("VerifyNIZKProof should reject tampered proof")
 	}
 }

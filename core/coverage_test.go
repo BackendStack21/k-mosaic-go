@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
 )
 
 func TestValidateParams_Coverage(t *testing.T) {
@@ -37,39 +37,39 @@ func TestValidateParams_Coverage(t *testing.T) {
 		t.Error("expected error for small SLSS.M")
 	}
 
-	// SLSS.Sigma < 3.0
+	// SLSS.Eta out of range
 	p = base
-	p.SLSS.Sigma = 2.0
+	p.SLSS.Eta = 2
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for small SLSS.Sigma")
+		t.Error("expected error for small SLSS.Eta")
 	}
 
-	// TDD.N <= 0
+	// SLSS compression bits out of range
 	p = base
-	p.TDD.N = 0
+	p.SLSS.DV = 2
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for TDD.N <= 0")
+		t.Error("expected error for too few DV bits")
 	}
 
-	// TDD.R > TDD.N
+	// code: non-prime ring length
 	p = base
-	p.TDD.R = p.TDD.N + 1
+	p.Code.N = 57636
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for TDD.R > TDD.N")
+		t.Error("expected error for non-prime code ring length")
 	}
 
-	// !isPrime(EGRW.P)
+	// code: Reed-Solomon parameters inconsistent
 	p = base
-	p.EGRW.P = 4
+	p.Code.Delta = 10
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for non-prime EGRW.P")
+		t.Error("expected error for inconsistent Reed-Solomon parameters")
 	}
 
-	// EGRW.K < 64
+	// code: N1*N2 exceeds N
 	p = base
-	p.EGRW.K = 63
+	p.Code.Mult = 6
 	if err := ValidateParams(p); err == nil {
-		t.Error("expected error for small EGRW.K")
+		t.Error("expected error for code longer than ring")
 	}
 
 	// Unknown security level

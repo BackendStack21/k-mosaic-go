@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
 )
 
 func TestKEMRoundTrip128(t *testing.T) {

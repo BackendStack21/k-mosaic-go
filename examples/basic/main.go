@@ -2,14 +2,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"time"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
 )
 
 func main() {
@@ -45,11 +46,10 @@ func main() {
 	fmt.Printf("Shared secret (receiver): %s\n", hex.EncodeToString(sharedSecret[:16]))
 
 	// Verify shared secrets match
-	if hex.EncodeToString(encResult.SharedSecret) == hex.EncodeToString(sharedSecret) {
-		fmt.Println("✓ Shared secrets match!")
-	} else {
-		fmt.Println("✗ Shared secrets don't match!")
+	if !bytes.Equal(encResult.SharedSecret, sharedSecret) {
+		log.Fatal("shared secrets do not match")
 	}
+	fmt.Println("✓ Shared secrets match!")
 	fmt.Println()
 
 	// Demonstrate encryption/decryption
@@ -74,11 +74,10 @@ func main() {
 	fmt.Printf("Decryption: %v\n", time.Since(start))
 	fmt.Printf("Decrypted message: %s\n", string(decrypted))
 
-	if string(decrypted) == string(message) {
-		fmt.Println("✓ Decryption successful!")
-	} else {
-		fmt.Println("✗ Decryption failed!")
+	if !bytes.Equal(decrypted, message) {
+		log.Fatal("decrypted message differs from the original")
 	}
+	fmt.Println("✓ Decryption successful!")
 	fmt.Println()
 
 	// Demonstrate signatures
@@ -104,11 +103,10 @@ func main() {
 	valid := sign.Verify(&signKP.PublicKey, msgToSign, signature)
 	fmt.Printf("Verification: %v\n", time.Since(start))
 
-	if valid {
-		fmt.Println("✓ Signature is valid!")
-	} else {
-		fmt.Println("✗ Signature is invalid!")
+	if !valid {
+		log.Fatal("signature is invalid")
 	}
+	fmt.Println("✓ Signature is valid!")
 	fmt.Println()
 
 	fmt.Println("Demo complete!")

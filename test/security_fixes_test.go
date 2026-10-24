@@ -5,9 +5,9 @@ import (
 	"bytes"
 	"testing"
 
-	kmosaic "github.com/BackendStack21/k-mosaic-go"
-	"github.com/BackendStack21/k-mosaic-go/kem"
-	"github.com/BackendStack21/k-mosaic-go/sign"
+	kmosaic "github.com/BackendStack21/k-mosaic-go/v2"
+	"github.com/BackendStack21/k-mosaic-go/v2/kem"
+	"github.com/BackendStack21/k-mosaic-go/v2/sign"
 )
 
 // TestKEMGenerateKeyPairPanicRecovery verifies panic recovery in KEM key generation.
@@ -55,7 +55,9 @@ func TestSignSignPanicRecovery(t *testing.T) {
 	if sig == nil {
 		t.Fatalf("Sign returned nil signature")
 	}
-	if len(sig.Commitment) != 32 || len(sig.Challenge) != 32 || len(sig.Response) != 64 {
+	p := kp.PublicKey.Params
+	if len(sig.Lattice.Challenge) != p.Lattice.CTildeSize || len(sig.Lattice.Z) != p.Lattice.N ||
+		len(sig.MQ.S) != p.MQ.N || len(sig.Hash.Data) == 0 {
 		t.Errorf("Signature components have incorrect length")
 	}
 }
