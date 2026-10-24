@@ -1,7 +1,7 @@
 # kMOSAIC Go - Makefile
 # Post-quantum cryptographic library
 
-.PHONY: all build test test-verbose test-race test-386 bench bench-full bench-128 bench-256 coverage coverage-html lint fmt vet security deps verify update example doc clean install check ci help
+.PHONY: all build test test-verbose test-race test-386 test-timing bench bench-full bench-128 bench-256 coverage coverage-html lint fmt vet security deps verify update example doc clean install check ci help
 
 # Default target
 all: fmt vet test
@@ -124,8 +124,14 @@ test-386:
 	GOARCH=386 go test ./internal/wire/ ./kem/ ./sign/ -run 'Deserialize|Truncated|Header|Huge'
 	GOARCH=386 go test ./core/ ./utils/ ./problems/qcsd/ ./problems/uov/ ./problems/slhdsa/
 
+# Timing-flatness tests: statistical, so they run one test binary at a time
+# on a quiet machine and are skipped unless KMOSAIC_TIMING_TESTS is set.
+test-timing:
+	@echo "Running timing-flatness tests sequentially..."
+	KMOSAIC_TIMING_TESTS=1 go test -p 1 -count=1 -run 'TimingFlat' ./problems/qcsd/ ./problems/uov/
+
 # CI pipeline simulation
-ci: fmt vet lint test test-race test-386
+ci: fmt vet lint test test-race test-386 test-timing
 	@echo "Local CI pipeline completed (the hosted CI additionally fuzzes the deserializers)"
 
 # Help

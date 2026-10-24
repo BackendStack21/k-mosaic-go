@@ -2,6 +2,7 @@ package qcsd
 
 import (
 	"bytes"
+	"github.com/BackendStack21/k-mosaic-go/v4/internal/timingtest"
 	"math/rand"
 	"runtime"
 	"sort"
@@ -304,9 +305,7 @@ func measureDecode(ws [][]byte, rounds, perBatch int) []time.Duration {
 // rounds, 1.5x tolerance, re-measured before failing) so that it does not
 // flake on a busy machine; the numbers are logged.
 func TestReedSolomonTimingFlat(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing test skipped in -short mode")
-	}
+	timingtest.Gate(t, raceEnabled)
 	rng := rand.New(rand.NewSource(5))
 	cw := rsEncode(make([]byte, 32), 90, 29)
 	counts := []int{0, 1, 5, 10, 15, 20, 25, 29, 30, 45, 90}
@@ -531,9 +530,7 @@ func measureMul(h, s []uint64, sups [][]int, n, rounds, perBatch int) []time.Dur
 // rounds, re-measured up to five times before failing). The old windowed
 // multiply read the same cache lines for every position of (a) and (b).
 func TestMulSparseTimingFlat(t *testing.T) {
-	if testing.Short() || raceEnabled {
-		t.Skip("timing test skipped in -short mode and under the race detector")
-	}
+	timingtest.Gate(t, raceEnabled)
 	rng := rand.New(rand.NewSource(29))
 	n := core.CodeHQC256.N
 	h, s := randVec(rng, n), randVec(rng, n)

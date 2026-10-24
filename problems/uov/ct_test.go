@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha3"
 	"encoding/hex"
+	"github.com/BackendStack21/k-mosaic-go/v4/internal/timingtest"
 	mrand "math/rand"
 	"testing"
 	"time"
@@ -347,9 +348,7 @@ func measureAttempts(cases []timingCase, rounds, perBatch int) []time.Duration {
 // loose (minimum over interleaved rounds, re-measured before failing) so as
 // not to flake on a busy machine; the numbers are logged.
 func TestSignTimingFlat(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing test skipped in -short mode")
-	}
+	timingtest.Gate(t, raceEnabled)
 	for _, ps := range paramSets {
 		t.Run(ps.name, func(t *testing.T) {
 			p := ps.p
@@ -457,9 +456,7 @@ func TestSignAllocsIndependentOfMessage(t *testing.T) {
 // the zero matrix and 200µs on a random one for M = 96): zero, anti-identity,
 // staircase, rank-deficient and random matrices.
 func TestSolveTimingFlat(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing test skipped in -short mode")
-	}
+	timingtest.Gate(t, raceEnabled)
 	const m = 96
 	wa := words(m + 1)
 	rng := mrand.New(mrand.NewSource(17))

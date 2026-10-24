@@ -43,10 +43,14 @@ jobs:
       - name: Run tests with the race detector
         run: go test -race ./kem/ ./sign/ ./problems/...
 
+      - name: Run the timing-flatness tests alone (one test binary at a time)
+        run: KMOSAIC_TIMING_TESTS=1 go test -p 1 -count=1 -run 'TimingFlat' ./problems/qcsd/ ./problems/uov/
+
       - name: Build and test on a 32-bit target
         run: |
           GOARCH=386 go test ./internal/wire/ ./kem/ ./sign/ -run 'Deserialize|Truncated|Header|Huge'
           GOARCH=386 go test ./core/ ./utils/ ./problems/qcsd/ ./problems/uov/ ./problems/slhdsa/
+          KMOSAIC_TIMING_TESTS=1 GOARCH=386 go test -p 1 -count=1 -run 'TimingFlat' ./problems/qcsd/ ./problems/uov/
 
       - name: Fuzz deserializers briefly
         run: |

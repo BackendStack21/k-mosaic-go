@@ -674,7 +674,10 @@ MOS-256 signing key (58 → 84 ms).
 - **What "constant-time" means here.** No branch, loop bound, memory address
   or shift amount depends on secret data in the library's own code, verified
   by reading, by disassembly of the field primitives, and by interleaved
-  timing tests. Not covered: the Go compiler's instruction selection (the
+  timing tests (`*TimingFlat`; statistical, so they are gated behind
+  `KMOSAIC_TIMING_TESTS` and run one test binary at a time in CI, since
+  concurrent test binaries on a small runner produce spreads of 1.3–1.5 with
+  no consistent slow input). Not covered: the Go compiler's instruction selection (the
   language does not promise branch-free code for masked expressions; today's
   amd64 output is branch-free), the Go runtime (allocation, garbage
   collection and scheduling add timing noise that does not depend on the
